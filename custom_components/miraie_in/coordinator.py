@@ -54,16 +54,13 @@ def is_esphome_2026_10_or_newer(hass: HomeAssistant, entity_id: str | None) -> b
 
 
 def is_blaster_available_by_sensor(state_val: Any, entity_id: str | None) -> bool:
-    """Determine if blaster is available based on an availability or cutoff sensor."""
+    """Determine if blaster is available based on an availability or status entity."""
     if state_val is None or not entity_id:
         return True
     s = str(getattr(state_val, "state", state_val)).lower()
     if s in (STATE_UNAVAILABLE, STATE_UNKNOWN, "none", ""):
         return False
-    if "cutoff" in entity_id.lower():
-        # Cutoff switch: ON = Cut off (unavailable), OFF = Connected/Normal (available)
-        return s not in ("on", "true", "1")
-    # Standard availability / ping / power sensor: ON = Available, OFF = Unavailable
+    # Standard availability (switch ON = available, device_tracker 'home' = available)
     return s in ("on", "home", "connected", "true", "1")
 
 

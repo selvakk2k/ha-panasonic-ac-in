@@ -380,8 +380,8 @@ class TestCoordinatorIRDispatch(unittest.IsolatedAsyncioTestCase):
             mock_dev.sw_version = "2025.12.4"
             self.assertFalse(coord.is_esphome_2026_10_or_newer)
 
-    async def test_availability_sensor_and_cutoff_inversion(self):
-        """Test availability sensor logic and cutoff name-based inversion."""
+    async def test_availability_sensor_and_device_tracker(self):
+        """Test availability logic for switches, device trackers, and binary sensors."""
         from unittest.mock import MagicMock
         hass = MockHass()
         coord = MirAIeDeviceCoordinator(
@@ -392,31 +392,40 @@ class TestCoordinatorIRDispatch(unittest.IsolatedAsyncioTestCase):
             has_wifi=False,
             primary_backend="ir",
             blaster_entity_id="infrared.living_room_blaster",
-            availability_entity_id="input_boolean.fake_ir_cutoff",
+            availability_entity_id="switch.blaster_smart_plug",
         )
         hass.states["infrared.living_room_blaster"] = MagicMock(state="available")
 
-        # Fake cutoff: state='off' means NOT cut off -> available
-        hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="off")
+        # Smart plug switch: 'on' -> available, 'off' -> unavailable
+        hass.states["switch.blaster_smart_plug"] = MagicMock(state="on")
         self.assertTrue(coord.is_blaster_available_by_sensor)
         self.assertTrue(coord.is_ir_blaster_available)
 
-        # Fake cutoff: state='on' means CUT OFF -> unavailable
-        hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="on")
+        hass.states["switch.blaster_smart_plug"] = MagicMock(state="off")
         self.assertFalse(coord.is_blaster_available_by_sensor)
         self.assertFalse(coord.is_ir_blaster_available)
 
-        # Standard ping sensor (not cutoff)
-        coord.availability_entity_id = "binary_sensor.blaster_ping"
-        hass.states["binary_sensor.blaster_ping"] = MagicMock(state="on")
+        # Device tracker (router): 'home' -> available, 'not_home' -> unavailable
+        coord.availability_entity_id = "device_tracker.ir_blaster"
+        hass.states["device_tracker.ir_blaster"] = MagicMock(state="home")
         self.assertTrue(coord.is_blaster_available_by_sensor)
         self.assertTrue(coord.is_ir_blaster_available)
 
-        hass.states["binary_sensor.blaster_ping"] = MagicMock(state="off")
+        hass.states["device_tracker.ir_blaster"] = MagicMock(state="not_home")
         self.assertFalse(coord.is_blaster_available_by_sensor)
         self.assertFalse(coord.is_ir_blaster_available)
 
-        hass.states["binary_sensor.blaster_ping"] = MagicMock(state="unavailable")
+        # Standard binary sensor / connection status: 'on' -> available, 'off' -> unavailable
+        coord.availability_entity_id = "binary_sensor.blaster_status"
+        hass.states["binary_sensor.blaster_status"] = MagicMock(state="on")
+        self.assertTrue(coord.is_blaster_available_by_sensor)
+        self.assertTrue(coord.is_ir_blaster_available)
+
+        hass.states["binary_sensor.blaster_status"] = MagicMock(state="off")
+        self.assertFalse(coord.is_blaster_available_by_sensor)
+        self.assertFalse(coord.is_ir_blaster_available)
+
+        hass.states["binary_sensor.blaster_status"] = MagicMock(state="unavailable")
         self.assertFalse(coord.is_blaster_available_by_sensor)
         self.assertFalse(coord.is_ir_blaster_available)
 
@@ -434,22 +443,22 @@ class TestCoordinatorIRDispatch(unittest.IsolatedAsyncioTestCase):
             has_wifi=False,
             primary_backend="ir",
             blaster_entity_id="infrared.living_room_blaster",
-            availability_entity_id="input_boolean.fake_ir_cutoff",
+            availability_entity_id="switch.blaster_smart_plug",
         )
         coord._is_esphome_blaster = False
         hass.states["infrared.living_room_blaster"] = MagicMock(state="available")
-        hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="off")
+        hass.states["switch.blaster_smart_plug"] = MagicMock(state="on")
 
         # 1. Dispatch initial command
         await coord.async_dispatch_ir_command(mode="cool", target_temp=24, origin="HA UI")
         self.assertIsNotNone(coord._last_requested_ir_params)
 
-        # 2. Simulate cutoff switch turning OFF (i.e. old_state='on' (cut off), new_state='off' (restored))
+        # 2. Simulate smart plug turning ON (old_state='off' -> new_state='on')
         event = MagicMock(spec=Event)
         event.data = {
-            "entity_id": "input_boolean.fake_ir_cutoff",
-            "old_state": MagicMock(state="on"),
-            "new_state": MagicMock(state="off"),
+            "entity_id": "switch.blaster_smart_plug",
+            "old_state": MagicMock(state="off"),
+            "new_state": MagicMock(state="on"),
         }
 
         with patch.object(coord, "_async_resync_on_reconnect", new_callable=AsyncMock) as mock_resync:

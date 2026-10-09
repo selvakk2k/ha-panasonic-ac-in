@@ -89,7 +89,7 @@ def build_cloud_devices_schema(default_install_date: str) -> vol.Schema:
                 selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
             ),
             vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
-                selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
+                selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
             ),
             vol.Optional(CONF_IR_FORMAT, default="auto"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -653,7 +653,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
                 ),
                 vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
+                    selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
                 ),
                 vol.Optional(CONF_IR_FORMAT, default="auto"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
@@ -792,7 +792,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
                 ),
                 vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
-                    selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
+                    selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
                 ),
                 vol.Optional(CONF_IR_FORMAT, default="auto"): selector.SelectSelector(
                     selector.SelectSelectorConfig(

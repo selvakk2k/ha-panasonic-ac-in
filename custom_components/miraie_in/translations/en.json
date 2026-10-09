@@ -30,7 +30,7 @@
           "blaster_entity_id": "IR Transmitter Entity (Optional)",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
-          "availability_entity_id": "Availability / Cutoff Entity (Optional)",
+          "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format",
           "install_date": "Energy History Start Date"
         },
@@ -38,7 +38,7 @@
           "blaster_entity_id": "Optional IR blaster entity used to transmit commands locally.",
           "receiver_entity_id": "Optional entity used to listen for physical remote button presses.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
-          "availability_entity_id": "Optional sensor, switch, or input boolean indicating IR transmitter power/availability (e.g. ping binary sensor or fake cutoff switch).",
+          "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "primary_backend": "Default transport used to dispatch commands in Hybrid mode.",
           "ir_format": "Encoding format expected by your IR transmitter."
         }
@@ -76,14 +76,14 @@
           "blaster_entity_id": "IR Transmitter Entity",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
-          "availability_entity_id": "Availability / Cutoff Entity (Optional)",
+          "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format"
         },
         "data_description": {
           "blaster_entity_id": "Entity used to transmit infrared commands to the AC unit.",
           "receiver_entity_id": "Optional entity used to listen for physical remote control button presses to synchronize state.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
-          "availability_entity_id": "Optional sensor, switch, or input boolean indicating IR transmitter power/availability (e.g. ping binary sensor or fake cutoff switch).",
+          "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "ir_format": "Encoding format expected by your IR blaster (e.g. Home Assistant Infrared, Tasmota MQTT, Broadlink Base64)."
         }
       },
@@ -121,7 +121,7 @@
           "blaster_entity_id": "IR Transmitter Entity",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
-          "availability_entity_id": "Availability / Cutoff Entity (Optional)",
+          "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format",
           "primary_backend": "Primary Control",
           "hybrid_submode": "Hybrid Control Mode"
@@ -130,7 +130,7 @@
           "blaster_entity_id": "Entity used to transmit infrared commands to the AC unit.",
           "receiver_entity_id": "Optional entity used to listen for physical remote control button presses to synchronize state.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
-          "availability_entity_id": "Optional sensor, switch, or input boolean indicating IR transmitter power/availability (e.g. ping binary sensor or fake cutoff switch).",
+          "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "primary_backend": "Default transport used to dispatch commands in Hybrid mode.",
           "ir_format": "Encoding format expected by your IR transmitter (e.g. Hardware-Tested Native Infrared, Capture-Verified Tasmota MQTT, Broadlink/Tuya Base64)."
         }
@@ -143,7 +143,7 @@
           "blaster_entity_id": "IR Transmitter Entity",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
-          "availability_entity_id": "Availability / Cutoff Entity (Optional)",
+          "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format",
           "primary_backend": "Primary Control",
           "hybrid_submode": "Hybrid Control Mode"
@@ -152,7 +152,7 @@
           "blaster_entity_id": "Entity used to transmit infrared commands to the AC unit.",
           "receiver_entity_id": "Optional entity used to listen for physical remote control button presses to synchronize state.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
-          "availability_entity_id": "Optional sensor, switch, or input boolean indicating IR transmitter power/availability (e.g. ping binary sensor or fake cutoff switch).",
+          "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "primary_backend": "Default transport used to dispatch commands in Hybrid mode.",
           "ir_format": "Encoding format expected by your IR transmitter (e.g. Hardware-Tested Native Infrared, Capture-Verified Tasmota MQTT, Broadlink/Tuya Base64)."
         }

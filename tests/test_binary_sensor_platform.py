@@ -105,13 +105,13 @@ class TestBinarySensorPlatform(unittest.TestCase):
         self.hass.states["remote.bedroom_blaster"] = MagicMock(state="on")
         self.assertTrue(ir_sensor.is_on)
 
-        # Set fake cutoff entity
-        self.coordinator.availability_entity_id = "input_boolean.fake_ir_cutoff"
-        self.hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="off")
+        # Set availability entity (e.g. smart plug / device tracker)
+        self.coordinator.availability_entity_id = "switch.smart_plug"
+        self.hass.states["switch.smart_plug"] = MagicMock(state="on")
         self.assertTrue(ir_sensor.is_on)
 
-        # Cut off
-        self.hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="on")
+        # Smart plug off -> unavailable
+        self.hass.states["switch.smart_plug"] = MagicMock(state="off")
         self.assertFalse(ir_sensor.is_on)
 
 
