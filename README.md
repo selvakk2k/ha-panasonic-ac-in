@@ -148,9 +148,13 @@ Click **Configure** on any Panasonic AC device card to customize hardware bindin
 * **IR Transmitter Entity (Optional)**: Select an `infrared` or `remote` entity (e.g. ESPHome, Broadlink, Tuya) to enable Local IR or Hybrid control. Leaving this empty operates in Cloud-Only mode.
 * **IR Receiver Entity (Optional)**: Select an `infrared` or `remote` receiver entity to capture physical remote control button presses for state synchronization.
 * **Room Temperature Sensor (Optional)**: Bind an external temperature sensor (`sensor.*` with `temperature` device class) for accurate room temperature reporting.
+* **Availability / Cutoff Entity (Optional)**: Select an availability sensor (`binary_sensor`, `input_boolean`, or `switch`) to detect blaster outages immediately without waiting for Home Assistant's default 90-120 second TCP timeout. If the entity ID contains `cutoff` (e.g. `input_boolean.fake_ir_cutoff`), its state is automatically inverted (`on` = cut off / offline, `off` = connected / online).
 * **IR Protocol / Format**: Select the signal encoding format expected by your blaster (`Auto-Detect (Recommended)`, `Home Assistant Infrared / ESPHome`, `Tasmota / AEHA Hex`, `Broadlink Base64`, or `Tuya Base64`).
 * **Energy History Start Date**: Select the date to begin importing historical energy statistics from the MirAIe cloud (defaults to 6 months ago, up to ~8 months supported).
 
+### ESPHome Blaster Recommendations & Firmware Notice
+* **ESPHome 2026.10+ Upgrade (Recommended)**: For native `infrared` transmitters, upgrading the blaster to ESPHome `2026.10` or newer enables hardware transmit-complete acknowledgements. The integration automatically detects firmware 2026.10+ and applies an explicit 2.5-second completion timeout to command dispatch, failing over immediately on hardware outages.
+* **LibreTiny Buffer Size Change (PR #19101)**: If using Beken BK7231N (LibreTiny) or ESP8266 hardware with an explicit `buffer_size` configured under `remote_receiver:`, note that ESPHome 2026.10 measures buffer capacity in bytes rather than entry count. Multiply your existing `buffer_size` value by 4 (e.g. from `1000` to `4000`) when upgrading your YAML configuration to ESPHome 2026.10+. If `buffer_size` is omitted in your YAML, no change is needed.
 
 ---
 
