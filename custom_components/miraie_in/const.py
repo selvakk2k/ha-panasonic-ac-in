@@ -6,8 +6,6 @@ PACKAGE_NAME = "custom_components.miraie_in"
 CONF_INSTALL_DATE = "install_date"
 
 # 2.0 Hybrid Architecture Config Keys
-
-CONF_CONTROL_PLANE = "control_plane"
 CONF_MODEL_CODE = "model_code"
 CONF_BLASTER_ENTITY_ID = "blaster_entity_id"
 CONF_RECEIVER_ENTITY_ID = "receiver_entity_id"
@@ -21,9 +19,6 @@ CONF_HAS_HEAT = "has_heat"
 CONF_HAS_NANOE = "has_nanoe"
 CONF_CONVERTI_TIER = "converti_tier"
 
-CONTROL_PLANE_CLOUD = "cloud"
-CONTROL_PLANE_IR = "ir"
-CONTROL_PLANE_BOTH = "both"
 
 BACKEND_CLOUD = "cloud"
 BACKEND_IR = "ir"
@@ -169,24 +164,10 @@ CONVERTI_8IN1_PRESET_MODES = [
 ]
 
 # --- Converti 7-in-1 vs 8-in-1 model support ---
-#
-# Verified directly against Panasonic's own store.in.panasonic.com
-# /2025-model/ and /2026-model/ catalog pages (not third-party
-# retailers/trackers, which were found to have inconsistent year
-# labelling). Every model confirmed under the 2026 catalog is 8-in-1;
-# every one still under 2025 is 7-in-1 -- but the generation letter
-# that marks "2026" differs by series group:
-#
-#   Group A (NU, SU):      2025 = "A" (7-in-1)  ->  2026 = "B" (8-in-1)
-#   Group B (EZ, HU, EU):  2025 = "B" (7-in-1)  ->  2026 = "C" (8-in-1)
-#
-# The generation letter is a per-series revision counter, not a
-# fleet-wide year code -- it cannot be compared across series, only
-# against its own group's threshold below. Only letters from the
-# current (2024 onward) A/B/C cycle are recognised; older codes (e.g.
-# "Z") are intentionally left unmapped and fall back to 7-in-1, since
-# there's no evidence either way for that older generation and older
-# models are out of scope for now.
+# Panasonic India models use a series-specific generation letter following the tonnage:
+#   Group A (NU, SU): 'A' = 7-in-1, 'B' or higher = 8-in-1 (2026+)
+#   Group B (EZ, HU, EU): 'B' = 7-in-1, 'C' or higher = 8-in-1 (2026+)
+# Unmatched or older generation codes fall back safely to 7-in-1.
 _CONVERTI_LETTER_ORDER = {"A": 1, "B": 2, "C": 3}
 
 CONVERTI_GROUP_A_SERIES = ("NU", "SU")
@@ -195,21 +176,6 @@ CONVERTI_GROUP_A_8IN1_THRESHOLD = "B"
 CONVERTI_GROUP_B_SERIES = ("EZ", "HU", "EU")
 CONVERTI_GROUP_B_8IN1_THRESHOLD = "C"
 
-# Known gap: "QU" (e.g. CS-CU-QU26BKYFM) is a confirmed 7-in-1 model in
-# the 2025 catalog, but not yet in either group above -- its 2026
-# behaviour is unconfirmed. It currently falls through to the 7-in-1
-# default, which is correct for the 2025 unit but unverified for any
-# 2026 QU model. If you can confirm a 2026 QU model's Converti step
-# count from an official Panasonic listing, please open an issue/PR.
-
-# No confirmed exceptions to the pattern above at this time. An earlier
-# version of this file listed CS-EU12BKY3FM as one, based on unverified
-# early research -- Panasonic's own retailer listings (Croma, Amazon,
-# and others) explicitly describe it as "7-in-1 Convertible", and it's
-# correctly classified as 7-in-1 by the general rule below anyway (EU
-# group threshold for 8-in-1 is "C"; EU12BKY3FM carries letter "B").
-# If you find a real exception, please open an issue/PR with a link to
-# an official Panasonic listing confirming it.
 CONVERTI_8IN1_MODEL_EXCEPTIONS: set[str] = set()
 
 
@@ -287,8 +253,7 @@ def get_converti_preset_modes(model_number: str | None) -> list[str]:
     return CONVERTI_7IN1_PRESET_MODES
 
 
-# --- Nanoe air purifier gating (Untested - no physical device to verify) ---
-#
+# --- Nanoe air purifier gating ---
 # nanoe-G and nanoe-X air purification technologies are available on premium
 # series (primarily the XU series and HU Amaze Grey series) in the Panasonic
 # India catalog.

@@ -166,7 +166,7 @@ class MirAIeDeviceCoordinator:
 
     @property
     def is_blaster_available_by_sensor(self) -> bool:
-        """Return True if availability/cutoff sensor indicates the blaster is available."""
+        """Return True if availability entity indicates the blaster is available."""
         if not self.availability_entity_id:
             return True
         if hasattr(self, "hass") and self.hass.states:
@@ -354,7 +354,7 @@ class MirAIeDeviceCoordinator:
         if self.availability_entity_id and hasattr(self, "hass") and getattr(self.hass, "states", None):
             st = self.hass.states.get(self.availability_entity_id)
             if st is not None and not is_blaster_available_by_sensor(st.state, self.availability_entity_id):
-                LOGGER.warning("Device %s: IR dispatch blocked by availability/cutoff sensor %s (state=%s)", self.device_id, self.availability_entity_id, st.state)
+                LOGGER.warning("Device %s: IR dispatch blocked by availability entity %s (state=%s)", self.device_id, self.availability_entity_id, st.state)
                 self.ir_blaster_available = False
                 self._notify_listeners()
                 return False
@@ -744,7 +744,7 @@ class MirAIeDeviceCoordinator:
                 self.hass, [self.availability_entity_id], self._async_availability_state_changed
             )
             self._unsub_event_bus.append(unsub_avail)
-            LOGGER.info("Device %s: Registered IR blaster availability/cutoff listener on entity %s", self.device_id, self.availability_entity_id)
+            LOGGER.info("Device %s: Registered IR blaster availability listener on entity %s", self.device_id, self.availability_entity_id)
             if hasattr(self.hass, "states") and self.hass.states:
                 cur_st = self.hass.states.get(self.availability_entity_id)
                 if cur_st is not None and not is_blaster_available_by_sensor(cur_st.state, self.availability_entity_id):
@@ -1006,7 +1006,7 @@ class MirAIeDeviceCoordinator:
             )
 
     async def _async_availability_state_changed(self, event: Any) -> None:
-        """Handle state changes on the availability or cutoff sensor."""
+        """Handle state changes on the availability entity."""
         event_data = getattr(event, "data", {}) if hasattr(event, "data") else (event.get("data", {}) if isinstance(event, dict) else {})
         old_state = event_data.get("old_state")
         new_state = event_data.get("new_state")
@@ -1024,7 +1024,7 @@ class MirAIeDeviceCoordinator:
 
         self.ir_blaster_available = is_avail
         LOGGER.info(
-            "Device %s: Availability/cutoff sensor %s changed to %s (ir_blaster_available=%s)",
+            "Device %s: Availability entity %s changed to %s (ir_blaster_available=%s)",
             self.device_id,
             self.availability_entity_id,
             new_raw,
