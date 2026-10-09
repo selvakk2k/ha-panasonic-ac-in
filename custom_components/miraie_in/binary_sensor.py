@@ -191,11 +191,9 @@ class MirAIeIRBlasterAvailableBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        blaster_id = self.coordinator.blaster_entity_id
-        if not blaster_id:
+        if not self.coordinator:
             return False
-        state = self.coordinator.hass.states.get(blaster_id)
-        return state is not None and state.state not in ["unavailable", "unknown"]
+        return bool(self.coordinator.is_ir_blaster_available)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -212,14 +210,18 @@ class MirAIeIRBlasterAvailableBinarySensor(BinarySensorEntity):
             self.async_on_remove(
                 self.coordinator.async_add_listener(self.async_write_ha_state)
             )
-        blaster_id = self.coordinator.blaster_entity_id
-        if blaster_id:
-            from homeassistant.helpers.event import async_track_state_change_event
-            self.async_on_remove(
-                async_track_state_change_event(
-                    self.coordinator.hass, [blaster_id], self._async_blaster_changed
+            track_entities = []
+            if self.coordinator.blaster_entity_id:
+                track_entities.append(self.coordinator.blaster_entity_id)
+            if self.coordinator.availability_entity_id:
+                track_entities.append(self.coordinator.availability_entity_id)
+            if track_entities:
+                from homeassistant.helpers.event import async_track_state_change_event
+                self.async_on_remove(
+                    async_track_state_change_event(
+                        self.coordinator.hass, track_entities, self._async_blaster_changed
+                    )
                 )
-            )
 
     async def _async_blaster_changed(self, event) -> None:
         self.async_write_ha_state()

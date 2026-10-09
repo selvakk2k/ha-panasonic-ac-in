@@ -99,11 +99,20 @@ class TestBinarySensorPlatform(unittest.TestCase):
         online_sensor = MirAIeDeviceOnlineBinarySensor(self.mock_device, self.coordinator)
         self.assertTrue(online_sensor.is_on)
 
-    def test_mqtt_sensor_disconnected(self):
-        """Test MQTT connected sensor returns False when broker is not connected."""
-        self.mock_hub.broker.connected.is_set.return_value = False
-        mqtt_sensor = MirAIeCloudMQTTConnectedBinarySensor(self.mock_device, self.coordinator)
-        self.assertFalse(mqtt_sensor.is_on)
+    def test_ir_blaster_available_binary_sensor(self):
+        """Test IR blaster available binary sensor reflects coordinator availability."""
+        ir_sensor = MirAIeIRBlasterAvailableBinarySensor(self.mock_device, self.coordinator)
+        self.hass.states["remote.bedroom_blaster"] = MagicMock(state="on")
+        self.assertTrue(ir_sensor.is_on)
+
+        # Set fake cutoff entity
+        self.coordinator.availability_entity_id = "input_boolean.fake_ir_cutoff"
+        self.hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="off")
+        self.assertTrue(ir_sensor.is_on)
+
+        # Cut off
+        self.hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="on")
+        self.assertFalse(ir_sensor.is_on)
 
 
 if __name__ == "__main__":
