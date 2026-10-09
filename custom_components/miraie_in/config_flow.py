@@ -21,6 +21,7 @@ from .const import (
     CONF_BLASTER_ENTITY_ID,
     CONF_RECEIVER_ENTITY_ID,
     CONF_ROOM_TEMP_SENSOR,
+    CONF_AVAILABILITY_ENTITY_ID,
     CONF_IR_FORMAT,
     CONF_PRIMARY_BACKEND,
     CONF_HYBRID_SUBMODE,
@@ -86,6 +87,9 @@ def build_cloud_devices_schema(default_install_date: str) -> vol.Schema:
             ),
             vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+            ),
+            vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
             ),
             vol.Optional(CONF_IR_FORMAT, default="auto"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -394,6 +398,18 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         if blaster_val:
             dev_opt[CONF_BLASTER_ENTITY_ID] = blaster_val
+        receiver_raw = user_input.get(CONF_RECEIVER_ENTITY_ID)
+        if receiver_raw and str(receiver_raw).lower() not in ("none", "null", ""):
+            dev_opt[CONF_RECEIVER_ENTITY_ID] = str(receiver_raw).strip()
+        temp_raw = user_input.get(CONF_ROOM_TEMP_SENSOR)
+        if temp_raw and str(temp_raw).lower() not in ("none", "null", ""):
+            dev_opt[CONF_ROOM_TEMP_SENSOR] = str(temp_raw).strip()
+        avail_raw = user_input.get(CONF_AVAILABILITY_ENTITY_ID)
+        if avail_raw and str(avail_raw).lower() not in ("none", "null", ""):
+            dev_opt[CONF_AVAILABILITY_ENTITY_ID] = str(avail_raw).strip()
+        ir_fmt = user_input.get(CONF_IR_FORMAT)
+        if ir_fmt:
+            dev_opt[CONF_IR_FORMAT] = ir_fmt
 
         entry_data = {
             "username": creds.get("username", ""),
@@ -599,6 +615,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             receiver_id = "" if (receiver_raw is None or str(receiver_raw).lower() in ("none", "null", "")) else str(receiver_raw).strip()
             temp_sensor_raw = user_input.get(CONF_ROOM_TEMP_SENSOR)
             temp_sensor_id = "" if (temp_sensor_raw is None or str(temp_sensor_raw).lower() in ("none", "null", "")) else str(temp_sensor_raw).strip()
+            avail_raw = user_input.get(CONF_AVAILABILITY_ENTITY_ID)
+            avail_id = "" if (avail_raw is None or str(avail_raw).lower() in ("none", "null", "")) else str(avail_raw).strip()
             ir_fmt = user_input.get(CONF_IR_FORMAT, "auto")
             if not blaster_id:
                 errors[CONF_BLASTER_ENTITY_ID] = "blaster_required"
@@ -616,6 +634,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_BLASTER_ENTITY_ID: blaster_id,
                     CONF_RECEIVER_ENTITY_ID: receiver_id,
                     CONF_ROOM_TEMP_SENSOR: temp_sensor_id,
+                    CONF_AVAILABILITY_ENTITY_ID: avail_id,
                     CONF_IR_FORMAT: ir_fmt,
                     "model_code": model_code,
                 }
@@ -632,6 +651,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
                 vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+                ),
+                vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
                 ),
                 vol.Optional(CONF_IR_FORMAT, default="auto"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
@@ -769,6 +791,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
                 ),
+                vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch"])
+                ),
                 vol.Optional(CONF_IR_FORMAT, default="auto"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
@@ -833,6 +858,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_blaster = target_opt.get(CONF_BLASTER_ENTITY_ID, current_options.get(CONF_BLASTER_ENTITY_ID, entry_data.get(CONF_BLASTER_ENTITY_ID, "")))
         current_receiver = target_opt.get(CONF_RECEIVER_ENTITY_ID, current_options.get(CONF_RECEIVER_ENTITY_ID, entry_data.get(CONF_RECEIVER_ENTITY_ID, "")))
         current_temp_sensor = target_opt.get(CONF_ROOM_TEMP_SENSOR, current_options.get(CONF_ROOM_TEMP_SENSOR, entry_data.get(CONF_ROOM_TEMP_SENSOR, "")))
+        current_avail = target_opt.get(CONF_AVAILABILITY_ENTITY_ID, current_options.get(CONF_AVAILABILITY_ENTITY_ID, entry_data.get(CONF_AVAILABILITY_ENTITY_ID, "")))
         current_ir_fmt = target_opt.get(CONF_IR_FORMAT, current_options.get(CONF_IR_FORMAT, entry_data.get(CONF_IR_FORMAT, "auto")))
         current_backend = target_opt.get(CONF_PRIMARY_BACKEND, current_options.get(CONF_PRIMARY_BACKEND, "cloud"))
         current_submode = target_opt.get(CONF_HYBRID_SUBMODE, current_options.get(CONF_HYBRID_SUBMODE, "auto"))
@@ -854,6 +880,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_BLASTER_ENTITY_ID: current_blaster,
                 CONF_RECEIVER_ENTITY_ID: current_receiver,
                 CONF_ROOM_TEMP_SENSOR: current_temp_sensor,
+                CONF_AVAILABILITY_ENTITY_ID: current_avail,
                 CONF_IR_FORMAT: current_ir_fmt,
                 CONF_PRIMARY_BACKEND: current_backend,
                 CONF_HYBRID_SUBMODE: current_submode,
@@ -902,6 +929,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         receiver_val = "" if (receiver_raw is None or str(receiver_raw).lower() in ("none", "null", "")) else str(receiver_raw).strip()
         temp_sensor_raw = user_input.get(CONF_ROOM_TEMP_SENSOR)
         temp_sensor_val = "" if (temp_sensor_raw is None or str(temp_sensor_raw).lower() in ("none", "null", "")) else str(temp_sensor_raw).strip()
+        avail_raw = user_input.get(CONF_AVAILABILITY_ENTITY_ID)
+        avail_val = "" if (avail_raw is None or str(avail_raw).lower() in ("none", "null", "")) else str(avail_raw).strip()
         ir_fmt_val = user_input.get(CONF_IR_FORMAT, "auto")
         backend_val = user_input.get(CONF_PRIMARY_BACKEND, "cloud")
 
@@ -919,6 +948,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         new_options[CONF_BLASTER_ENTITY_ID] = blaster_val
         new_options[CONF_RECEIVER_ENTITY_ID] = receiver_val
         new_options[CONF_ROOM_TEMP_SENSOR] = temp_sensor_val
+        new_options[CONF_AVAILABILITY_ENTITY_ID] = avail_val
         new_options[CONF_IR_FORMAT] = ir_fmt_val
         if model_code_val:
             new_options["model_code"] = model_code_val
@@ -932,6 +962,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             dev_entry[CONF_BLASTER_ENTITY_ID] = blaster_val
             dev_entry[CONF_RECEIVER_ENTITY_ID] = receiver_val
             dev_entry[CONF_ROOM_TEMP_SENSOR] = temp_sensor_val
+            dev_entry[CONF_AVAILABILITY_ENTITY_ID] = avail_val
             dev_entry[CONF_IR_FORMAT] = ir_fmt_val
             if model_code_val:
                 dev_entry["model_code"] = model_code_val

@@ -338,5 +338,125 @@ class TestCoordinatorIRDispatch(unittest.IsolatedAsyncioTestCase):
             mock_dispatch.assert_not_called()
 
 
+    async def test_esphome_version_detection(self):
+        """Test detection of ESPHome 2026.10+ firmware versions."""
+        from unittest.mock import patch, MagicMock
+        hass = MockHass()
+        coord = MirAIeDeviceCoordinator(
+            hass=hass,
+            entry_id="entry_ir_123",
+            device_id="dev_ir_456",
+            model_code="CS-CU-RU18CKY-1",
+            has_wifi=False,
+            primary_backend="ir",
+            blaster_entity_id="infrared.living_room_blaster",
+        )
+        with patch("homeassistant.helpers.entity_registry.async_get") as mock_er_fn, \
+             patch("homeassistant.helpers.device_registry.async_get") as mock_dr_fn:
+            mock_ent = MagicMock()
+            mock_ent.device_id = "device_123"
+            mock_ent.platform = "esphome"
+            mock_dev = MagicMock()
+            mock_er_fn.return_value.async_get = MagicMock(return_value=mock_ent)
+            mock_dr_fn.return_value.async_get = MagicMock(return_value=mock_dev)
+
+            # 2026.9.1 -> False
+            mock_dev.sw_version = "2026.9.1 (2026-10-04)"
+            self.assertFalse(coord.is_esphome_2026_10_or_newer)
+
+            # 2026.10.0b1 -> True
+            mock_dev.sw_version = "2026.10.0b1"
+            self.assertTrue(coord.is_esphome_2026_10_or_newer)
+
+            # 2026.10.0 -> True
+            mock_dev.sw_version = "2026.10.0"
+            self.assertTrue(coord.is_esphome_2026_10_or_newer)
+
+            # 2026.11.0 -> True
+            mock_dev.sw_version = "2026.11.0"
+            self.assertTrue(coord.is_esphome_2026_10_or_newer)
+
+            # 2025.12.4 -> False
+            mock_dev.sw_version = "2025.12.4"
+            self.assertFalse(coord.is_esphome_2026_10_or_newer)
+
+    async def test_availability_sensor_and_cutoff_inversion(self):
+        """Test availability sensor logic and cutoff name-based inversion."""
+        from unittest.mock import MagicMock
+        hass = MockHass()
+        coord = MirAIeDeviceCoordinator(
+            hass=hass,
+            entry_id="entry_ir_123",
+            device_id="dev_ir_456",
+            model_code="CS-CU-RU18CKY-1",
+            has_wifi=False,
+            primary_backend="ir",
+            blaster_entity_id="infrared.living_room_blaster",
+            availability_entity_id="input_boolean.fake_ir_cutoff",
+        )
+        hass.states["infrared.living_room_blaster"] = MagicMock(state="available")
+
+        # Fake cutoff: state='off' means NOT cut off -> available
+        hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="off")
+        self.assertTrue(coord.is_blaster_available_by_sensor)
+        self.assertTrue(coord.is_ir_blaster_available)
+
+        # Fake cutoff: state='on' means CUT OFF -> unavailable
+        hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="on")
+        self.assertFalse(coord.is_blaster_available_by_sensor)
+        self.assertFalse(coord.is_ir_blaster_available)
+
+        # Standard ping sensor (not cutoff)
+        coord.availability_entity_id = "binary_sensor.blaster_ping"
+        hass.states["binary_sensor.blaster_ping"] = MagicMock(state="on")
+        self.assertTrue(coord.is_blaster_available_by_sensor)
+        self.assertTrue(coord.is_ir_blaster_available)
+
+        hass.states["binary_sensor.blaster_ping"] = MagicMock(state="off")
+        self.assertFalse(coord.is_blaster_available_by_sensor)
+        self.assertFalse(coord.is_ir_blaster_available)
+
+        hass.states["binary_sensor.blaster_ping"] = MagicMock(state="unavailable")
+        self.assertFalse(coord.is_blaster_available_by_sensor)
+        self.assertFalse(coord.is_ir_blaster_available)
+
+    async def test_availability_entity_triggers_reconnect_resync(self):
+        """Verify that an availability entity transitioning to available triggers reconnect resync."""
+        from unittest.mock import patch, AsyncMock, MagicMock
+        from homeassistant.core import Event
+
+        hass = MockHass()
+        coord = MirAIeDeviceCoordinator(
+            hass=hass,
+            entry_id="entry_ir_123",
+            device_id="dev_ir_456",
+            model_code="CS-CU-RU18CKY-1",
+            has_wifi=False,
+            primary_backend="ir",
+            blaster_entity_id="infrared.living_room_blaster",
+            availability_entity_id="input_boolean.fake_ir_cutoff",
+        )
+        coord._is_esphome_blaster = False
+        hass.states["infrared.living_room_blaster"] = MagicMock(state="available")
+        hass.states["input_boolean.fake_ir_cutoff"] = MagicMock(state="off")
+
+        # 1. Dispatch initial command
+        await coord.async_dispatch_ir_command(mode="cool", target_temp=24, origin="HA UI")
+        self.assertIsNotNone(coord._last_requested_ir_params)
+
+        # 2. Simulate cutoff switch turning OFF (i.e. old_state='on' (cut off), new_state='off' (restored))
+        event = MagicMock(spec=Event)
+        event.data = {
+            "entity_id": "input_boolean.fake_ir_cutoff",
+            "old_state": MagicMock(state="on"),
+            "new_state": MagicMock(state="off"),
+        }
+
+        with patch.object(coord, "_async_resync_on_reconnect", new_callable=AsyncMock) as mock_resync:
+            await coord._async_availability_state_changed(event)
+            mock_resync.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
+

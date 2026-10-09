@@ -19,6 +19,54 @@ except ImportError:
     from .panasonic_ac_models import ACModelLookup, generate_ir_code, decode_ir_code
 
 
+import re
+
+
+def is_esphome_2026_10_or_newer(hass: HomeAssistant, entity_id: str | None) -> bool:
+    """Check if the emitter entity is backed by ESPHome 2026.10+ firmware."""
+    if not entity_id or hass is None:
+        return False
+    try:
+        from homeassistant.helpers import entity_registry as er, device_registry as dr
+
+        ent_reg = er.async_get(hass) if hasattr(er, "async_get") else None
+        dev_reg = dr.async_get(hass) if hasattr(dr, "async_get") else None
+        if not ent_reg or not dev_reg:
+            return False
+
+        entry = ent_reg.async_get(entity_id) if hasattr(ent_reg, "async_get") else None
+        if not entry or not getattr(entry, "device_id", None):
+            return False
+        if getattr(entry, "platform", None) != "esphome":
+            return False
+
+        device = dev_reg.async_get(entry.device_id) if hasattr(dev_reg, "async_get") else None
+        if not device or not getattr(device, "sw_version", None):
+            return False
+
+        match = re.match(r"^(\d+)\.(\d+)", str(device.sw_version).strip())
+        if match:
+            year, month = int(match.group(1)), int(match.group(2))
+            return (year, month) >= (2026, 10)
+    except Exception as err:
+        LOGGER.debug("Could not determine ESPHome firmware version for %s: %s", entity_id, err)
+    return False
+
+
+def is_blaster_available_by_sensor(state_val: Any, entity_id: str | None) -> bool:
+    """Determine if blaster is available based on an availability or cutoff sensor."""
+    if state_val is None or not entity_id:
+        return True
+    s = str(getattr(state_val, "state", state_val)).lower()
+    if s in (STATE_UNAVAILABLE, STATE_UNKNOWN, "none", ""):
+        return False
+    if "cutoff" in entity_id.lower():
+        # Cutoff switch: ON = Cut off (unavailable), OFF = Connected/Normal (available)
+        return s not in ("on", "true", "1")
+    # Standard availability / ping / power sensor: ON = Available, OFF = Unavailable
+    return s in ("on", "home", "connected", "true", "1")
+
+
 class MirAIeDeviceCoordinator:
     """State Coordinator managing push-based state for a single Panasonic AC device."""
 
@@ -35,6 +83,7 @@ class MirAIeDeviceCoordinator:
         blaster_entity_id: Optional[str] = None,
         receiver_entity_id: Optional[str] = None,
         temperature_sensor_entity_id: Optional[str] = None,
+        availability_entity_id: Optional[str] = None,
         ir_format: str = "auto",
         lookup=None,
         subentry_id: Optional[str] = None,  # Backward-compatible alias
@@ -52,6 +101,7 @@ class MirAIeDeviceCoordinator:
         self.blaster_entity_id = blaster_entity_id
         self.receiver_entity_id = receiver_entity_id
         self.temperature_sensor_entity_id = temperature_sensor_entity_id
+        self.availability_entity_id = availability_entity_id
         self.ir_format = ir_format
         self.hub: Any = None
         self._unsub_receiver: Optional[Callable[[], None]] = None
@@ -109,6 +159,37 @@ class MirAIeDeviceCoordinator:
         self._last_ir_command_source: str = "Init"
         self._last_requested_ir_params: Optional[Dict[str, Any]] = None
         self._listeners: list[Callable[[], None]] = []
+
+    @property
+    def is_esphome_2026_10_or_newer(self) -> bool:
+        """Return True if the configured IR blaster runs ESPHome 2026.10 or newer."""
+        if not self.blaster_entity_id:
+            return False
+        return is_esphome_2026_10_or_newer(self.hass, self.blaster_entity_id)
+
+    @property
+    def is_blaster_available_by_sensor(self) -> bool:
+        """Return True if availability/cutoff sensor indicates the blaster is available."""
+        if not self.availability_entity_id:
+            return True
+        if hasattr(self, "hass") and self.hass.states:
+            st = self.hass.states.get(self.availability_entity_id)
+            if st is not None:
+                return is_blaster_available_by_sensor(getattr(st, "state", st), self.availability_entity_id)
+        return True
+
+    @property
+    def is_ir_blaster_available(self) -> bool:
+        """Return True if IR blaster is available in HA and not cut off by sensor."""
+        if not self.blaster_entity_id:
+            return False
+        avail = self.ir_blaster_available
+        if not avail and hasattr(self, "hass") and self.hass.states:
+            st = self.hass.states.get(self.blaster_entity_id)
+            if st is not None:
+                raw_st = str(getattr(st, "state", st)).lower()
+                avail = raw_st not in (STATE_UNAVAILABLE, STATE_UNKNOWN, "none", "")
+        return bool(avail and self.is_blaster_available_by_sensor)
 
     @callback
     def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
@@ -273,6 +354,14 @@ class MirAIeDeviceCoordinator:
             LOGGER.error("Device %s: Cannot dispatch IR command — no blaster entity configured", self.device_id)
             return False
 
+        if self.availability_entity_id and hasattr(self, "hass") and getattr(self.hass, "states", None):
+            st = self.hass.states.get(self.availability_entity_id)
+            if st is not None and not is_blaster_available_by_sensor(st.state, self.availability_entity_id):
+                LOGGER.warning("Device %s: IR dispatch blocked by availability/cutoff sensor %s (state=%s)", self.device_id, self.availability_entity_id, st.state)
+                self.ir_blaster_available = False
+                self._notify_listeners()
+                return False
+
         # Apply parameters or use current coordinator state
         cmd_mode = mode or self.state["mode"]
         series_code = self.capabilities.get("series", "EU")
@@ -387,9 +476,29 @@ class MirAIeDeviceCoordinator:
                             return self._raw_timings
 
                     cmd_obj = MirAIeRawIRCommand(ir_data["raw"])
-                    LOGGER.info("Device %s: Transmitting native IR command via %s", self.device_id, self.blaster_entity_id)
-                    await async_send_command(self.hass, self.blaster_entity_id, cmd_obj)
-                    return _on_success()
+                    is_esphome_2026_10 = is_esphome_2026_10_or_newer(self.hass, self.blaster_entity_id)
+                    if is_esphome_2026_10:
+                        LOGGER.info("Device %s: Transmitting native IR via ESPHome 2026.10+ blaster %s with 2.5s completion timeout", self.device_id, self.blaster_entity_id)
+                        try:
+                            await asyncio.wait_for(
+                                async_send_command(self.hass, self.blaster_entity_id, cmd_obj),
+                                timeout=2.5,
+                            )
+                            return _on_success()
+                        except asyncio.TimeoutError:
+                            LOGGER.warning("Device %s: ESPHome 2026.10+ IR blaster %s timed out after 2.5s waiting for transmit completion", self.device_id, self.blaster_entity_id)
+                            self.ir_blaster_available = False
+                            self._notify_listeners()
+                            return False
+                        except Exception as err:
+                            LOGGER.warning("Device %s: ESPHome 2026.10+ IR blaster %s transmit failed: %s", self.device_id, self.blaster_entity_id, err)
+                            self.ir_blaster_available = False
+                            self._notify_listeners()
+                            return False
+                    else:
+                        LOGGER.info("Device %s: Transmitting native IR command via %s", self.device_id, self.blaster_entity_id)
+                        await async_send_command(self.hass, self.blaster_entity_id, cmd_obj)
+                        return _on_success()
                 except Exception as err:
                     LOGGER.debug("Native infrared helper threw exception for %s: %s, falling back to remote.send_command", self.device_id, err)
 
@@ -633,6 +742,17 @@ class MirAIeDeviceCoordinator:
             self._unsub_event_bus.append(unsub_blaster)
             LOGGER.info("Device %s: Registered IR blaster state listener on entity %s (is_esphome=%s)", self.device_id, self.blaster_entity_id, self._is_esphome_blaster)
 
+        if self.availability_entity_id:
+            unsub_avail = async_track_state_change_event(
+                self.hass, [self.availability_entity_id], self._async_availability_state_changed
+            )
+            self._unsub_event_bus.append(unsub_avail)
+            LOGGER.info("Device %s: Registered IR blaster availability/cutoff listener on entity %s", self.device_id, self.availability_entity_id)
+            if hasattr(self.hass, "states") and self.hass.states:
+                cur_st = self.hass.states.get(self.availability_entity_id)
+                if cur_st is not None and not is_blaster_available_by_sensor(cur_st.state, self.availability_entity_id):
+                    self.ir_blaster_available = False
+
         if not self.receiver_entity_id:
             LOGGER.info("Device %s: No receiver_entity_id configured, skipping IR receiver setup", self.device_id)
             return
@@ -857,30 +977,8 @@ class MirAIeDeviceCoordinator:
                 except (ValueError, TypeError):
                     pass
 
-    async def _async_blaster_state_changed(self, event: Any) -> None:
-        """Handle IR blaster emitter availability changes."""
-        event_data = getattr(event, "data", {}) if hasattr(event, "data") else (event.get("data", {}) if isinstance(event, dict) else {})
-        old_state = event_data.get("old_state")
-        new_state = event_data.get("new_state")
-        if new_state is None:
-            self.ir_blaster_available = False
-            self._notify_listeners()
-            return
-
-        new_raw = getattr(new_state, "state", None) if hasattr(new_state, "state") else (new_state.get("state") if isinstance(new_state, dict) else str(new_state))
-        if new_raw in (STATE_UNAVAILABLE, STATE_UNKNOWN, None, ""):
-            self.ir_blaster_available = False
-            self._notify_listeners()
-            return
-
-        # Trigger only on the edge transition from unavailable/unknown to available
-        old_raw = getattr(old_state, "state", None) if hasattr(old_state, "state") else (old_state.get("state") if isinstance(old_state, dict) else str(old_state) if old_state else None)
-        if old_raw is not None and old_raw not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
-            return
-
-        self.ir_blaster_available = True
-        self._notify_listeners()
-
+    async def _async_resync_on_reconnect(self) -> None:
+        """Resync pending state to blaster upon reconnection."""
         elapsed = time.monotonic() - self._last_ir_command_timestamp
         if (
             self._last_ir_command_source not in ("IR Remote", "Cloud", "Init")
@@ -909,6 +1007,70 @@ class MirAIeDeviceCoordinator:
                 elapsed,
                 self._last_requested_ir_params,
             )
+
+    async def _async_availability_state_changed(self, event: Any) -> None:
+        """Handle state changes on the availability or cutoff sensor."""
+        event_data = getattr(event, "data", {}) if hasattr(event, "data") else (event.get("data", {}) if isinstance(event, dict) else {})
+        old_state = event_data.get("old_state")
+        new_state = event_data.get("new_state")
+        new_raw = getattr(new_state, "state", None) if hasattr(new_state, "state") else (new_state.get("state") if isinstance(new_state, dict) else str(new_state) if new_state else None)
+        old_raw = getattr(old_state, "state", None) if hasattr(old_state, "state") else (old_state.get("state") if isinstance(old_state, dict) else str(old_state) if old_state else None)
+
+        is_avail = is_blaster_available_by_sensor(new_raw, self.availability_entity_id) if (new_raw and self.availability_entity_id) else False
+        was_avail = is_blaster_available_by_sensor(old_raw, self.availability_entity_id) if (old_raw and self.availability_entity_id) else True
+
+        # Blaster entity check: if blaster entity is defined, must ALSO be available in HA
+        if self.blaster_entity_id and is_avail and hasattr(self, "hass") and self.hass.states:
+            blaster_st = self.hass.states.get(self.blaster_entity_id)
+            if blaster_st is None or str(blaster_st.state).lower() in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+                is_avail = False
+
+        self.ir_blaster_available = is_avail
+        LOGGER.info(
+            "Device %s: Availability/cutoff sensor %s changed to %s (ir_blaster_available=%s)",
+            self.device_id,
+            self.availability_entity_id,
+            new_raw,
+            self.ir_blaster_available,
+        )
+        self._notify_listeners()
+
+        if is_avail and not was_avail:
+            await self._async_resync_on_reconnect()
+
+    async def _async_blaster_state_changed(self, event: Any) -> None:
+        """Handle IR blaster emitter availability changes."""
+        event_data = getattr(event, "data", {}) if hasattr(event, "data") else (event.get("data", {}) if isinstance(event, dict) else {})
+        old_state = event_data.get("old_state")
+        new_state = event_data.get("new_state")
+        if new_state is None:
+            self.ir_blaster_available = False
+            self._notify_listeners()
+            return
+
+        new_raw = getattr(new_state, "state", None) if hasattr(new_state, "state") else (new_state.get("state") if isinstance(new_state, dict) else str(new_state))
+        if new_raw in (STATE_UNAVAILABLE, STATE_UNKNOWN, None, ""):
+            self.ir_blaster_available = False
+            self._notify_listeners()
+            return
+
+        # Trigger only on the edge transition from unavailable/unknown to available
+        old_raw = getattr(old_state, "state", None) if hasattr(old_state, "state") else (old_state.get("state") if isinstance(old_state, dict) else str(old_state) if old_state else None)
+        if old_raw is not None and old_raw not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            return
+
+        # Check availability sensor boundary if configured
+        if self.availability_entity_id and hasattr(self, "hass") and self.hass.states:
+            st = self.hass.states.get(self.availability_entity_id)
+            if st is not None and not is_blaster_available_by_sensor(st.state, self.availability_entity_id):
+                self.ir_blaster_available = False
+                self._notify_listeners()
+                return
+
+        self.ir_blaster_available = True
+        self._notify_listeners()
+
+        await self._async_resync_on_reconnect()
 
     @callback
     def _apply_decoded_ir_state(self, decoded: Dict[str, Any]) -> None:
