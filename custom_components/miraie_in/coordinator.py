@@ -185,7 +185,7 @@ class MirAIeDeviceCoordinator:
             st = self.hass.states.get(self.blaster_entity_id)
             if st is not None:
                 raw_st = str(getattr(st, "state", st)).lower()
-                avail = raw_st not in (STATE_UNAVAILABLE, STATE_UNKNOWN, "none", "")
+                avail = raw_st not in (STATE_UNAVAILABLE, "none", "")
         return bool(avail and self.is_blaster_available_by_sensor)
 
     @callback
@@ -738,6 +738,15 @@ class MirAIeDeviceCoordinator:
             )
             self._unsub_event_bus.append(unsub_blaster)
             LOGGER.info("Device %s: Registered IR blaster state listener on entity %s (is_esphome=%s)", self.device_id, self.blaster_entity_id, self._is_esphome_blaster)
+            if hasattr(self.hass, "states") and self.hass.states:
+                blaster_st = self.hass.states.get(self.blaster_entity_id)
+                if blaster_st is not None:
+                    raw_st = str(getattr(blaster_st, "state", blaster_st)).lower()
+                    self.ir_blaster_available = raw_st not in (STATE_UNAVAILABLE, "none", "")
+                else:
+                    self.ir_blaster_available = True
+            else:
+                self.ir_blaster_available = True
 
         if self.availability_entity_id:
             unsub_avail = async_track_state_change_event(
@@ -1019,7 +1028,7 @@ class MirAIeDeviceCoordinator:
         # Blaster entity check: if blaster entity is defined, must ALSO be available in HA
         if self.blaster_entity_id and is_avail and hasattr(self, "hass") and self.hass.states:
             blaster_st = self.hass.states.get(self.blaster_entity_id)
-            if blaster_st is None or str(blaster_st.state).lower() in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            if blaster_st is not None and str(blaster_st.state).lower() in (STATE_UNAVAILABLE, "none", ""):
                 is_avail = False
 
         self.ir_blaster_available = is_avail
@@ -1046,14 +1055,14 @@ class MirAIeDeviceCoordinator:
             return
 
         new_raw = getattr(new_state, "state", None) if hasattr(new_state, "state") else (new_state.get("state") if isinstance(new_state, dict) else str(new_state))
-        if new_raw in (STATE_UNAVAILABLE, STATE_UNKNOWN, None, ""):
+        if new_raw in (STATE_UNAVAILABLE, None, ""):
             self.ir_blaster_available = False
             self._notify_listeners()
             return
 
-        # Trigger only on the edge transition from unavailable/unknown to available
+        # Trigger only on the edge transition from unavailable to available
         old_raw = getattr(old_state, "state", None) if hasattr(old_state, "state") else (old_state.get("state") if isinstance(old_state, dict) else str(old_state) if old_state else None)
-        if old_raw is not None and old_raw not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+        if old_raw is not None and old_raw not in (STATE_UNAVAILABLE, None, ""):
             return
 
         # Check availability sensor boundary if configured

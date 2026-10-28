@@ -36,7 +36,7 @@ async def async_setup_entry(
 
     entities: list[BinarySensorEntity] = []
     entry_data = entry.data if hasattr(entry, "data") and isinstance(entry.data, dict) else {}
-    is_ir_entry = entry_data.get("is_ir_only", False)
+    is_ir_entry = entry_data.get("is_ir_only", False) or "username" not in entry_data
     devices = get_devices_for_entry(hub, entry)
 
 

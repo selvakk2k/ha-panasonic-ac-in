@@ -206,7 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dummy_dev = type("Device", (), {
             "id": dev_id,
             "friendly_name": name,
-            "details": type("Details", (), {"model_number": model_code, "brand": "Panasonic", "firmware_version": "IR-1.0", "has_wifi": not entry.data.get("is_ir_only", False)})(),
+            "details": type("Details", (), {"model_number": model_code, "brand": "Panasonic", "firmware_version": "IR-1.0", "has_wifi": not is_ir_only})(),
             "status": type("Status", (), {
                 "is_online": True,
                 "power_mode": type("Pwr", (), {"value": "off"})(),
@@ -221,6 +221,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             })(),
             "register_callback": lambda *args, **kwargs: None,
             "remove_callback": lambda *args, **kwargs: None,
+            "close": lambda *args, **kwargs: None,
+            "refresh": lambda *args, **kwargs: None,
             "turn_on": _dummy_async_coro,
             "turn_off": _dummy_async_coro,
             "set_temperature": _dummy_async_coro,
@@ -418,6 +420,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 })(),
                 "register_callback": lambda *args, **kwargs: None,
                 "remove_callback": lambda *args, **kwargs: None,
+                "close": lambda *args, **kwargs: None,
+                "refresh": lambda *args, **kwargs: None,
                 "turn_on": _dummy_async_coro,
                 "turn_off": _dummy_async_coro,
                 "set_temperature": _dummy_async_coro,

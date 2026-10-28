@@ -465,6 +465,59 @@ class TestCoordinatorIRDispatch(unittest.IsolatedAsyncioTestCase):
             await coord._async_availability_state_changed(event)
             mock_resync.assert_called_once()
 
+    async def test_ir_blaster_state_unknown_is_available(self):
+        """Verify that an idle/uninitialized IR blaster with state='unknown' is considered available."""
+        from unittest.mock import MagicMock
+        from custom_components.miraie_in.climate import MirAIeClimate
+        from custom_components.miraie_in.switch import MirAIeDisplaySwitch
+
+        hass = MockHass()
+        coord = MirAIeDeviceCoordinator(
+            hass=hass,
+            entry_id="entry_ir_office",
+            device_id="manual_ac_office",
+            model_code="CS-CU-RU18CKY-1",
+            has_wifi=False,
+            primary_backend="ir",
+            blaster_entity_id="infrared.office_iroffice_ir_transmitter",
+        )
+
+        dummy_dev = MagicMock()
+        dummy_dev.id = "manual_ac_office"
+        dummy_dev.details.brand = "Panasonic"
+        dummy_dev.details.model_number = "CS-CU-RU18CKY-1"
+        dummy_dev.details.firmware_version = "IR-1.0"
+        dummy_dev.status.is_online = True
+
+        climate = MirAIeClimate(device=dummy_dev, entry=None, coordinator=coord)
+        climate.hass = hass
+        disp_switch = MirAIeDisplaySwitch(device=dummy_dev, coordinator=coord)
+        disp_switch.hass = hass
+
+        # 1. State 'unknown' (e.g. freshly booted ESPHome IR emitter before sending first signal)
+        hass.states["infrared.office_iroffice_ir_transmitter"] = MagicMock(state="unknown")
+        coord.async_setup_receiver()
+
+        self.assertTrue(coord.is_ir_blaster_available)
+        self.assertTrue(climate.available)
+        self.assertTrue(disp_switch.available)
+
+        # 2. State 'unavailable' (e.g. physical ESPHome node goes offline)
+        hass.states["infrared.office_iroffice_ir_transmitter"] = MagicMock(state="unavailable")
+        coord.ir_blaster_available = False
+
+        self.assertFalse(coord.is_ir_blaster_available)
+        self.assertFalse(climate.available)
+        self.assertFalse(disp_switch.available)
+
+        # 3. State timestamp (e.g. signal transmitted and restored across HA restart)
+        hass.states["infrared.office_iroffice_ir_transmitter"] = MagicMock(state="2026-10-28T10:15:30.123456+00:00")
+        coord.ir_blaster_available = True
+
+        self.assertTrue(coord.is_ir_blaster_available)
+        self.assertTrue(climate.available)
+        self.assertTrue(disp_switch.available)
+
 
 if __name__ == "__main__":
     unittest.main()
