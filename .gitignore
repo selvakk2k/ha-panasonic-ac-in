@@ -25,6 +25,9 @@ share/python-wheels/
 .installed.cfg
 *.egg
 
+# Analysis & Plan documents
+MIRAIE_APK_REVERSE_ENGINEERING_FINDINGS_AND_PLAN.md
+
 # Virtual environments
 .venv/
 venv/

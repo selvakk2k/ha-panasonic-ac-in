@@ -1,6 +1,9 @@
 {
   "domain": "miraie_in",
   "name": "Panasonic AC India",
+  "after_dependencies": [
+    "mqtt"
+  ],
   "codeowners": [
     "@selvakk2k",
     "@shashi278"
@@ -8,9 +11,6 @@
   "config_flow": true,
   "dependencies": [
     "recorder"
-  ],
-  "after_dependencies": [
-    "mqtt"
   ],
   "documentation": "https://github.com/selvakk2k/ha-panasonic-ac-in",
   "homekit": {},

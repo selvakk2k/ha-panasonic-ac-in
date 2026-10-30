@@ -176,13 +176,8 @@ def is_mqtt_topic(value: str | None) -> bool:
     """Return True if value represents an MQTT topic rather than a Home Assistant entity ID."""
     if not value or not isinstance(value, str):
         return False
-    # MQTT topics usually contain '/' (e.g. cmnd/tasmota/IRsend) or start with cmnd/, stat/, tele/
-    if "/" in value or value.startswith("cmnd/") or value.startswith("stat/") or value.startswith("tele/"):
-        return True
-    # If it has no dot, it cannot be a Home Assistant entity_id (domain.object_id)
-    if "." not in value:
-        return True
-    return False
+    # MQTT topics must contain '/' (e.g. cmnd/tasmota/IRsend, stat/..., tele/...)
+    return "/" in value
 
 
 def validate_mqtt_topic(topic: str | None) -> bool:
@@ -213,9 +208,10 @@ def emitter_available(
     emitter_id: str | None,
     availability_entity_id: str | None = None,
     blaster_override: bool = True,
+    lwt_online: bool | None = None,
 ) -> bool:
     """Return True if the IR blaster emitter is online and available."""
-    if not blaster_override:
+    if not blaster_override or lwt_online is False:
         return False
 
     if availability_entity_id and hass:
@@ -241,8 +237,9 @@ def emitter_available(
             LOGGER.debug("Unexpected error checking MQTT connection state: %s", err)
         return True
 
+    # Standard entity IDs must contain a dot (domain.object_id). If not, invalid entity ID.
     if "." not in emitter_id:
-        return True
+        return False
 
     if hass and hasattr(hass, "states") and hasattr(hass.states, "get"):
         st = hass.states.get(emitter_id)

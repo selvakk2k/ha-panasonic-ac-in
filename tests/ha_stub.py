@@ -360,6 +360,12 @@ def setup_ha_stubs():
             self.__dict__.update(kwargs)
     class DateSelector(SelectorBase):
         pass
+    class TextSelector(SelectorBase):
+        pass
+    class TextSelectorConfig(dict):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.__dict__.update(kwargs)
 
     selector_mod.SelectOptionDict = SelectOptionDict
     selector_mod.SelectSelector = SelectSelector
@@ -369,6 +375,8 @@ def setup_ha_stubs():
     selector_mod.EntitySelector = EntitySelector
     selector_mod.EntitySelectorConfig = EntitySelectorConfig
     selector_mod.DateSelector = DateSelector
+    selector_mod.TextSelector = TextSelector
+    selector_mod.TextSelectorConfig = TextSelectorConfig
 
     # MQTT helper stubs
     import homeassistant.components.mqtt as mqtt_mod

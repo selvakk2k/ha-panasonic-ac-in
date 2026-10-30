@@ -150,6 +150,9 @@ class MirAIeDeviceCoordinator:
         self.cloud_mqtt_connected = False
         self.device_online = False
         self.ir_blaster_available = True if is_mqtt_topic(blaster_entity_id) else False
+        self._lwt_online: Optional[bool] = None
+        self._unloaded: bool = False
+        self._unsub_avail_task: Optional[asyncio.Task] = None
         self._working_ir_format: Optional[str] = (
             ir_format if ir_format and ir_format.lower() not in ("auto", "") else None
         )
@@ -180,8 +183,10 @@ class MirAIeDeviceCoordinator:
 
     @property
     def is_ir_blaster_available(self) -> bool:
-        """Return True if IR blaster is available in HA and not cut off by sensor."""
+        """Return True if IR blaster is available in HA and not cut off by sensor or LWT."""
         if not self.blaster_entity_id:
+            return False
+        if self._lwt_online is False:
             return False
         if is_mqtt_topic(self.blaster_entity_id):
             if not self.ir_blaster_available:
@@ -191,6 +196,7 @@ class MirAIeDeviceCoordinator:
                 self.blaster_entity_id,
                 self.availability_entity_id,
                 self.ir_blaster_available,
+                lwt_online=self._lwt_online,
             )
         avail = self.ir_blaster_available
         if not avail and hasattr(self, "hass") and self.hass.states:
@@ -198,7 +204,7 @@ class MirAIeDeviceCoordinator:
             if st is not None:
                 raw_st = str(getattr(st, "state", st)).lower()
                 avail = raw_st not in (STATE_UNAVAILABLE, "none", "")
-        return bool(avail and self.is_blaster_available_by_sensor)
+        return bool(avail and self.is_blaster_available_by_sensor and (self._lwt_online is not False))
 
     @callback
     def async_add_listener(self, update_callback: Callable[[], None]) -> Callable[[], None]:
@@ -760,6 +766,7 @@ class MirAIeDeviceCoordinator:
                     self.hass,
                     self.blaster_entity_id,
                     self.availability_entity_id,
+                    lwt_online=self._lwt_online,
                 )
                 LOGGER.info(
                     "Device %s: Registered MQTT IR transmitter topic %s (available=%s)",
@@ -767,8 +774,6 @@ class MirAIeDeviceCoordinator:
                     self.blaster_entity_id,
                     self.ir_blaster_available,
                 )
-                if self.availability_topic and hasattr(self.hass, "async_create_task"):
-                    self.hass.async_create_task(self._async_subscribe_availability_topic())
             else:
                 from homeassistant.helpers import entity_registry as er
 
@@ -797,6 +802,9 @@ class MirAIeDeviceCoordinator:
                         self.ir_blaster_available = True
                 else:
                     self.ir_blaster_available = True
+
+        if self.availability_topic and hasattr(self.hass, "async_create_task"):
+            self._unsub_avail_task = self.hass.async_create_task(self._async_subscribe_availability_topic())
 
         if self.availability_entity_id:
             unsub_avail = async_track_state_change_event(
@@ -1091,7 +1099,7 @@ class MirAIeDeviceCoordinator:
         )
         self._notify_listeners()
 
-        if is_avail and not was_avail:
+        if is_avail and not was_avail and (self._lwt_online is not False):
             await self._async_resync_on_reconnect()
 
     async def _async_blaster_state_changed(self, event: Any) -> None:
@@ -1139,6 +1147,10 @@ class MirAIeDeviceCoordinator:
                 unsub = await mqtt.async_subscribe(
                     self.hass, self.availability_topic, self._async_mqtt_lwt_message
                 )
+                if self._unloaded:
+                    if unsub:
+                        unsub()
+                    return
                 if unsub:
                     self._unsub_event_bus.append(unsub)
                 LOGGER.info(
@@ -1164,20 +1176,14 @@ class MirAIeDeviceCoordinator:
             self.availability_topic,
             payload,
         )
-        was_avail = self.ir_blaster_available
+        was_online = self._lwt_online
         if payload in ("online", "1", "true", "connected", "home", "on"):
-            if self.availability_entity_id and hasattr(self, "hass") and self.hass.states:
-                st = self.hass.states.get(self.availability_entity_id)
-                if st is not None and not is_blaster_available_by_sensor(st.state, self.availability_entity_id):
-                    self.ir_blaster_available = False
-                    self._notify_listeners()
-                    return
-            self.ir_blaster_available = True
+            self._lwt_online = True
             self._notify_listeners()
-            if not was_avail and hasattr(self.hass, "async_create_task"):
+            if was_online is False and hasattr(self.hass, "async_create_task"):
                 self.hass.async_create_task(self._async_resync_on_reconnect())
         elif payload in ("offline", "0", "false", "disconnected", "not_home", "away", "off"):
-            self.ir_blaster_available = False
+            self._lwt_online = False
             self._notify_listeners()
 
     @callback
@@ -1250,6 +1256,10 @@ class MirAIeDeviceCoordinator:
     @callback
     def async_unload(self) -> None:
         """Unload and unregister listeners for this coordinator."""
+        self._unloaded = True
+        if self._unsub_avail_task and not self._unsub_avail_task.done():
+            self._unsub_avail_task.cancel()
+            self._unsub_avail_task = None
         if self._unsub_native_receiver:
             self._unsub_native_receiver()
             self._unsub_native_receiver = None
