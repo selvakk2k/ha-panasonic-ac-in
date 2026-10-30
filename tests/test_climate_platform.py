@@ -417,6 +417,37 @@ class TestClimatePlatform(unittest.IsolatedAsyncioTestCase):
             origin="IR Blaster",
         )
 
+    async def test_climate_availability_honours_lwt_offline_for_remote_blaster(self):
+        """Verify climate entity availability honours MQTT LWT offline status on remote.* blasters."""
+        self.mock_device.status = MagicMock(is_online=False)
+
+        coord = MirAIeDeviceCoordinator(
+            hass=self.hass,
+            entry_id="entry_climate_test",
+            device_id="dev_test",
+            model_code="CS-HZ24XKE",
+            has_wifi=False,
+            blaster_entity_id="remote.bedroom_ir_blaster",
+            availability_topic="tele/tasmota_ir/LWT",
+        )
+        self.hass.states["remote.bedroom_ir_blaster"] = MagicMock(state="on")
+        climate = MirAIeClimate(self.mock_device, self.mock_entry, coord)
+
+        # Initially, blaster entity is on and no LWT message received yet -> available
+        self.assertTrue(climate.available)
+
+        # LWT goes offline -> climate entity MUST become unavailable
+        class MockMsg:
+            def __init__(self, payload):
+                self.payload = payload
+
+        coord._async_mqtt_lwt_message(MockMsg("offline"))
+        self.assertFalse(climate.available)
+
+        # LWT goes back online -> climate entity becomes available again
+        coord._async_mqtt_lwt_message(MockMsg("online"))
+        self.assertTrue(climate.available)
+
 
 if __name__ == "__main__":
     unittest.main()

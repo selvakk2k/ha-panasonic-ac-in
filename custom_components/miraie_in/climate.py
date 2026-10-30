@@ -315,14 +315,7 @@ class MirAIeClimate(ClimateEntity):
 
         blaster_id = coord.blaster_entity_id if coord else None
         has_blaster = bool(blaster_id)
-        has_ir = False
-        if blaster_id and coord:
-            hass = getattr(self, "hass", None) or getattr(coord, "hass", None)
-            st = hass.states.get(blaster_id) if (hass and hasattr(hass, "states")) else None
-            if st is not None:
-                has_ir = str(st.state).lower() not in (STATE_UNAVAILABLE, "none", "")
-            else:
-                has_ir = bool(getattr(coord, "is_ir_blaster_available", True))
+        has_ir = bool(coord.is_ir_blaster_available) if (has_blaster and coord) else False
 
         if has_blaster and has_wifi:
             return has_cloud or has_ir
