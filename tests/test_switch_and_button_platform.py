@@ -206,6 +206,27 @@ class TestSwitchAndButtonPlatform(unittest.IsolatedAsyncioTestCase):
             mock_debug.assert_called_once()
             self.assertIn("Could not track blaster state change", mock_debug.call_args[0][0])
 
+    async def test_button_async_setup_entry_with_mappingproxy(self):
+        """Verify button async_setup_entry creates buttons when entry.data is MappingProxyType."""
+        from types import MappingProxyType
+        from custom_components.miraie_in.button import async_setup_entry, MirAIeCoilCleanButton, MirAIeRebuildEnergyStatsButton
+
+        proxy_data = MappingProxyType({"username": "user@test.com", "device_id": "dev_sb_test"})
+        entry = MagicMock(data=proxy_data, entry_id="entry_btn_test", runtime_data=self.mock_hub)
+        self.mock_hub.home.devices = [self.mock_device]
+        self.mock_hub.coordinators = {self.mock_device.id: self.coordinator}
+
+        added_entities = []
+        def async_add_entities(entities):
+            added_entities.extend(entities)
+
+        await async_setup_entry(self.hass, entry, async_add_entities)
+
+        types_added = [type(e) for e in added_entities]
+        self.assertIn(MirAIeCoilCleanButton, types_added)
+        self.assertIn(MirAIeRebuildEnergyStatsButton, types_added)
+
 
 if __name__ == "__main__":
     unittest.main()
+

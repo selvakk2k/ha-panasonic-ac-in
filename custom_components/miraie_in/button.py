@@ -22,7 +22,7 @@ from .sensor import async_backfill_energy_statistics, async_rebuild_full_energy_
 
 PARALLEL_UPDATES = 0
 from .logger import LOGGER
-from .utils import get_devices_for_entry
+from .utils import get_devices_for_entry, get_entry_data, is_ir_only_entry
 
 
 async def async_setup_entry(
@@ -31,8 +31,8 @@ async def async_setup_entry(
     """Set up the MirAIe button platform."""
     hub: MirAIeHub = entry.runtime_data
 
-    entry_data = getattr(entry, "data", {}) if isinstance(getattr(entry, "data", {}), dict) else {}
-    is_ir_entry = entry_data.get("is_ir_only", False) or "username" not in entry_data
+    entry_data = get_entry_data(entry)
+    is_ir_entry = is_ir_only_entry(entry)
     coordinators = getattr(hub, "coordinators", {})
 
     devices = get_devices_for_entry(hub, entry)

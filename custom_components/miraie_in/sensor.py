@@ -35,7 +35,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .utils import six_months_ago, get_last_sunday, get_devices_for_entry
+from .utils import six_months_ago, get_last_sunday, get_devices_for_entry, is_ir_only_entry
 from .logger import LOGGER
 
 
@@ -397,8 +397,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     """Set up MirAIe energy and status sensors from a config entry."""
     hub: MirAIeHub = entry.runtime_data
     coordinators = getattr(hub, "coordinators", {})
-    entry_data = entry.data if hasattr(entry, "data") and isinstance(entry.data, dict) else {}
-    is_ir_entry = entry_data.get("is_ir_only", False) or "username" not in entry_data
+    is_ir_entry = is_ir_only_entry(entry)
     
     devices = get_devices_for_entry(hub, entry)
 

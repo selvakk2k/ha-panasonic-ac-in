@@ -1,8 +1,31 @@
 import calendar
+from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any
 from homeassistant.util import dt as dt_util
 from .logger import LOGGER
+
+
+def get_entry_data(entry: Any) -> dict[str, Any]:
+    """Safely extract data dict from a ConfigEntry or dict-like object (supports MappingProxyType)."""
+    if not entry:
+        return {}
+    raw_data = getattr(entry, "data", entry)
+    if isinstance(raw_data, Mapping):
+        return dict(raw_data)
+    return {}
+
+
+def is_ir_only_entry(entry: Any) -> bool:
+    """Return True if entry is an IR-only entry, False if it has valid cloud credentials."""
+    if not entry:
+        return True
+    entry_data = get_entry_data(entry)
+    if not entry_data:
+        return True
+    if entry_data.get("is_ir_only", False):
+        return True
+    return "username" not in entry_data
 
 
 def get_last_sunday() -> date:
@@ -134,8 +157,7 @@ def get_devices_for_entry(hub: Any, entry: Any) -> list[Any]:
     if not hub or not hasattr(hub, "home") or not hasattr(hub.home, "devices"):
         return []
 
-    raw_data = getattr(entry, "data", entry)
-    entry_data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
+    entry_data = get_entry_data(entry)
     target_id = entry_data.get("device_id")
     account_devices = list(hub.home.devices)
 
@@ -154,7 +176,7 @@ def get_devices_for_entry(hub: Any, entry: Any) -> list[Any]:
         return matched
 
     # 2. Standalone IR / Mock entry (no MirAIe cloud credentials)
-    if entry_data.get("is_ir_only") or "username" not in entry_data:
+    if is_ir_only_entry(entry):
         return account_devices
 
     # 3. Cloud account with missing device_id on a single-device account

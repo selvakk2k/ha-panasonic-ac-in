@@ -63,7 +63,7 @@ from .const import (
 
 
 from .logger import LOGGER
-from .utils import get_devices_for_entry, async_attach_blaster_listener
+from .utils import get_devices_for_entry, async_attach_blaster_listener, is_ir_only_entry
 
 PARALLEL_UPDATES = 0
 
@@ -292,10 +292,7 @@ class MirAIeClimate(ClimateEntity):
         if coord:
             if not coord.has_wifi or getattr(coord, "primary_backend", "cloud") == "ir":
                 return True
-        entry_data = getattr(self.entry, "data", {}) if hasattr(self, "entry") and self.entry else {}
-        if isinstance(entry_data, dict) and entry_data.get("is_ir_only", False):
-            return True
-        return False
+        return is_ir_only_entry(getattr(self, "entry", None))
 
     @property
     def available(self) -> bool:

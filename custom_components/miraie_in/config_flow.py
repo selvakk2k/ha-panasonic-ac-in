@@ -35,6 +35,7 @@ from .utils import (
     is_ac_device,
     is_mqtt_topic,
     validate_mqtt_topic,
+    get_entry_data,
 )
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -901,7 +902,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         entry = self._get_config_entry()
         current_options = dict(getattr(entry, "options", {})) if entry else {}
-        entry_data = getattr(entry, "data", {}) if isinstance(getattr(entry, "data", {}), dict) else {}
+        entry_data = get_entry_data(entry)
         target_id = entry_data.get("device_id", "")
         devices_opt = current_options.get("devices", {})
         target_opt = devices_opt.get(target_id, {}) if target_id else {}

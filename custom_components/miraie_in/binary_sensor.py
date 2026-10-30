@@ -19,7 +19,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .logger import LOGGER
-from .utils import get_devices_for_entry, is_mqtt_topic
+from .utils import get_devices_for_entry, is_ir_only_entry, is_mqtt_topic
 
 PARALLEL_UPDATES = 0
 
@@ -35,8 +35,7 @@ async def async_setup_entry(
     ent_reg = er.async_get(hass)
 
     entities: list[BinarySensorEntity] = []
-    entry_data = entry.data if hasattr(entry, "data") and isinstance(entry.data, dict) else {}
-    is_ir_entry = entry_data.get("is_ir_only", False) or "username" not in entry_data
+    is_ir_entry = is_ir_only_entry(entry)
     devices = get_devices_for_entry(hub, entry)
 
 

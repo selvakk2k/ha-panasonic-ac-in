@@ -23,7 +23,7 @@ from miraie_ac.enums import (
 )
 
 
-class TestBinarySensorPlatform(unittest.TestCase):
+class TestBinarySensorPlatform(unittest.IsolatedAsyncioTestCase):
     """Test binary sensor platform entities."""
 
     def setUp(self):
@@ -114,6 +114,63 @@ class TestBinarySensorPlatform(unittest.TestCase):
         self.hass.states["switch.smart_plug"] = MagicMock(state="off")
         self.assertFalse(ir_sensor.is_on)
 
+    async def test_mappingproxy_config_entry_adds_cloud_binary_sensors(self):
+        """Verify that ConfigEntry with MappingProxyType data correctly creates cloud binary sensors."""
+        from types import MappingProxyType
+        from custom_components.miraie_in.binary_sensor import async_setup_entry
+        from custom_components.miraie_in.utils import is_ir_only_entry, get_entry_data
+
+        raw_data = {"username": "user@example.com", "password": "secret", "device_id": "dev_bs_test"}
+        proxy_data = MappingProxyType(raw_data)
+
+        self.assertFalse(is_ir_only_entry(MagicMock(data=proxy_data)))
+        self.assertEqual(get_entry_data(MagicMock(data=proxy_data)), raw_data)
+
+        entry = MagicMock()
+        entry.data = proxy_data
+        entry.runtime_data = self.mock_hub
+        self.mock_hub.home.devices = [self.mock_device]
+        self.mock_hub.coordinators = {self.mock_device.id: self.coordinator}
+
+        added_entities = []
+        def async_add_entities(entities):
+            added_entities.extend(entities)
+
+        await async_setup_entry(self.hass, entry, async_add_entities)
+
+        types_added = [type(e) for e in added_entities]
+        self.assertIn(MirAIeCloudMQTTConnectedBinarySensor, types_added)
+        self.assertIn(MirAIeDeviceOnlineBinarySensor, types_added)
+        self.assertIn(MirAIeFilterCleanBinarySensor, types_added)
+        self.assertIn(MirAIeCoilCleanBinarySensor, types_added)
+
+    async def test_ir_only_mappingproxy_skips_cloud_binary_sensors(self):
+        """Verify that an IR-only ConfigEntry with MappingProxyType skips cloud binary sensors."""
+        from types import MappingProxyType
+        from custom_components.miraie_in.binary_sensor import async_setup_entry
+        from custom_components.miraie_in.utils import is_ir_only_entry
+
+        proxy_data = MappingProxyType({"is_ir_only": True, "device_id": "dev_bs_test"})
+        self.assertTrue(is_ir_only_entry(MagicMock(data=proxy_data)))
+
+        entry = MagicMock()
+        entry.data = proxy_data
+        entry.runtime_data = self.mock_hub
+        self.mock_hub.home.devices = [self.mock_device]
+        self.mock_hub.coordinators = {self.mock_device.id: self.coordinator}
+
+        added_entities = []
+        def async_add_entities(entities):
+            added_entities.extend(entities)
+
+        await async_setup_entry(self.hass, entry, async_add_entities)
+
+        types_added = [type(e) for e in added_entities]
+        self.assertNotIn(MirAIeCloudMQTTConnectedBinarySensor, types_added)
+        self.assertNotIn(MirAIeDeviceOnlineBinarySensor, types_added)
+        self.assertIn(MirAIeIRBlasterAvailableBinarySensor, types_added)
+
 
 if __name__ == "__main__":
     unittest.main()
+

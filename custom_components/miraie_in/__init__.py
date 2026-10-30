@@ -40,7 +40,7 @@ from .const import (
 )
 from .coordinator import MirAIeDeviceCoordinator
 from .sensor import async_backfill_energy_statistics
-from .utils import six_months_ago, get_devices_for_entry
+from .utils import six_months_ago, get_devices_for_entry, get_entry_data, is_ir_only_entry
 
 
 
@@ -192,8 +192,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
 
     session = async_get_clientsession(hass)
-    has_username = "username" in entry.data
-    is_ir_only = entry.data.get("is_ir_only", False) or not has_username
+    entry_data = get_entry_data(entry)
+    has_username = "username" in entry_data
+    is_ir_only = is_ir_only_entry(entry)
 
     async def _dummy_async_coro(*args: Any, **kwargs: Any) -> None:
         return None
@@ -597,9 +598,9 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        entry_data = getattr(entry, "data", {}) if isinstance(getattr(entry, "data", {}), dict) else {}
+        entry_data = get_entry_data(entry)
         username = entry_data.get("username", "").lower() if "username" in entry_data else None
-        is_ir_only = entry_data.get("is_ir_only", False) or not username
+        is_ir_only = is_ir_only_entry(entry)
 
         hub_inst = getattr(entry, "runtime_data", None)
         if hub_inst and hasattr(hub_inst, "coordinators"):

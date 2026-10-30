@@ -29,7 +29,7 @@ from .const import (
 )
 
 from .logger import LOGGER
-from .utils import get_devices_for_entry, async_attach_blaster_listener
+from .utils import get_devices_for_entry, async_attach_blaster_listener, is_ir_only_entry
 
 PARALLEL_UPDATES = 0
 
@@ -72,8 +72,7 @@ async def async_setup_entry(
             entities.append(MirAIeNanoeSwitch(device, coordinator))
 
         if coordinator:
-            entry_data = entry.data if hasattr(entry, "data") and isinstance(entry.data, dict) else {}
-            is_ir_only = entry_data.get("is_ir_only", False) or not coordinator.has_wifi
+            is_ir_only = is_ir_only_entry(entry) or not coordinator.has_wifi
             if not is_ir_only and coordinator.blaster_entity_id:
                 entities.append(MirAIeHybridSubmodeSwitch(device, coordinator))
                 entities.append(MirAIeBackendSelectSwitch(device, coordinator))
