@@ -9,6 +9,9 @@
   "dependencies": [
     "recorder"
   ],
+  "after_dependencies": [
+    "mqtt"
+  ],
   "documentation": "https://github.com/selvakk2k/ha-panasonic-ac-in",
   "homekit": {},
   "integration_type": "hub",

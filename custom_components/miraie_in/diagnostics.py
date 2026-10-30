@@ -29,7 +29,9 @@ TO_REDACT = {
     "token",
     "user_id",
     "uid",
-    "device_id"
+    "device_id",
+    "mqtt_topic",
+    "availability_topic",
 }
 
 

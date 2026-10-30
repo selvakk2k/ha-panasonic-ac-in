@@ -19,7 +19,7 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .const import DOMAIN
 from .logger import LOGGER
-from .utils import get_devices_for_entry
+from .utils import get_devices_for_entry, is_mqtt_topic
 
 PARALLEL_UPDATES = 0
 
@@ -211,7 +211,7 @@ class MirAIeIRBlasterAvailableBinarySensor(BinarySensorEntity):
                 self.coordinator.async_add_listener(self.async_write_ha_state)
             )
             track_entities = []
-            if self.coordinator.blaster_entity_id:
+            if self.coordinator.blaster_entity_id and not is_mqtt_topic(self.coordinator.blaster_entity_id):
                 track_entities.append(self.coordinator.blaster_entity_id)
             if self.coordinator.availability_entity_id:
                 track_entities.append(self.coordinator.availability_entity_id)

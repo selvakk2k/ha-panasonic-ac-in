@@ -172,9 +172,91 @@ def get_devices_for_entry(hub: Any, entry: Any) -> list[Any]:
     return []
 
 
+def is_mqtt_topic(value: str | None) -> bool:
+    """Return True if value represents an MQTT topic rather than a Home Assistant entity ID."""
+    if not value or not isinstance(value, str):
+        return False
+    # MQTT topics usually contain '/' (e.g. cmnd/tasmota/IRsend) or start with cmnd/, stat/, tele/
+    if "/" in value or value.startswith("cmnd/") or value.startswith("stat/") or value.startswith("tele/"):
+        return True
+    # If it has no dot, it cannot be a Home Assistant entity_id (domain.object_id)
+    if "." not in value:
+        return True
+    return False
+
+
+def validate_mqtt_topic(topic: str | None) -> bool:
+    """Validate MQTT topic: must not be empty, must contain '/', no wildcards '#' or '+'."""
+    if not topic or not isinstance(topic, str):
+        return False
+    t = topic.strip()
+    if not t or "/" not in t:
+        return False
+    if "#" in t or "+" in t:
+        return False
+    return True
+
+
+def is_blaster_available_by_sensor(state_val: Any, entity_id: str | None) -> bool:
+    """Determine if blaster is available based on an availability or status entity."""
+    if state_val is None or not entity_id:
+        return True
+    s = str(getattr(state_val, "state", state_val)).lower()
+    if s in ("unavailable", "unknown", "none", ""):
+        return False
+    # Standard availability (switch ON = available, device_tracker 'home' = available)
+    return s in ("on", "home", "connected", "true", "1")
+
+
+def emitter_available(
+    hass: Any,
+    emitter_id: str | None,
+    availability_entity_id: str | None = None,
+    blaster_override: bool = True,
+) -> bool:
+    """Return True if the IR blaster emitter is online and available."""
+    if not blaster_override:
+        return False
+
+    if availability_entity_id and hass:
+        st = hass.states.get(availability_entity_id) if hasattr(hass, "states") and hass.states else None
+        if st is not None and not is_blaster_available_by_sensor(st.state, availability_entity_id):
+            return False
+
+    if not emitter_id:
+        return False
+
+    if is_mqtt_topic(emitter_id):
+        # Verify MQTT publish service is registered if hass services are loaded
+        if hass and hasattr(hass, "services") and hasattr(hass.services, "has_service"):
+            if not hass.services.has_service("mqtt", "publish"):
+                return False
+        try:
+            from homeassistant.components import mqtt
+            if hasattr(mqtt, "is_connected") and not mqtt.is_connected(hass):
+                return False
+        except (ImportError, AttributeError):
+            return False
+        except Exception as err:
+            LOGGER.debug("Unexpected error checking MQTT connection state: %s", err)
+        return True
+
+    if "." not in emitter_id:
+        return True
+
+    if hass and hasattr(hass, "states") and hasattr(hass.states, "get"):
+        st = hass.states.get(emitter_id)
+        if st is None or str(st.state).lower() in ("unavailable", "unknown", ""):
+            return False
+
+    return True
+
+
 def async_attach_blaster_listener(entity: Any, coordinator: Any) -> None:
     """Attach a state-change listener to the coordinator's blaster entity, if present."""
     if not coordinator or not getattr(coordinator, "blaster_entity_id", None):
+        return
+    if is_mqtt_topic(coordinator.blaster_entity_id):
         return
     hass = getattr(entity, "hass", None)
     if not hass:
@@ -200,6 +282,7 @@ def async_attach_blaster_listener(entity: Any, coordinator: Any) -> None:
             getattr(entity, "entity_id", "unknown"),
             err,
         )
+
 
 
 

@@ -27,17 +27,21 @@
         "data": {
           "primary_backend": "Primary Control",
           "hybrid_submode": "Hybrid Failover",
+          "mqtt_topic": "MQTT Command Topic (Tasmota)",
           "blaster_entity_id": "IR Transmitter Entity (Optional)",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
+          "availability_topic": "MQTT Availability Topic (Optional)",
           "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format",
           "install_date": "Energy History Start Date"
         },
         "data_description": {
+          "mqtt_topic": "MQTT command topic to dispatch Tasmota IR payloads (e.g. cmnd/tasmota_ir/IRsend).",
           "blaster_entity_id": "Optional IR blaster entity used to transmit commands locally.",
           "receiver_entity_id": "Optional entity used to listen for physical remote button presses.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
+          "availability_topic": "Optional MQTT LWT topic to track transmitter online/offline status (e.g. tele/tasmota_ir/LWT).",
           "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "primary_backend": "Default transport used to dispatch commands in Hybrid mode.",
           "ir_format": "Encoding format expected by your IR transmitter."
@@ -73,16 +77,20 @@
         "title": "Step 3: Attach IR Hardware",
         "description": "Select the IR Transmitter entity to send commands to **{name}**, and optionally an IR Receiver entity to sync physical remote presses.",
         "data": {
+          "mqtt_topic": "MQTT Command Topic (Tasmota)",
           "blaster_entity_id": "IR Transmitter Entity",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
+          "availability_topic": "MQTT Availability Topic (Optional)",
           "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format"
         },
         "data_description": {
+          "mqtt_topic": "MQTT command topic to dispatch Tasmota IR payloads (e.g. cmnd/tasmota_ir/IRsend).",
           "blaster_entity_id": "Entity used to transmit infrared commands to the AC unit.",
           "receiver_entity_id": "Optional entity used to listen for physical remote control button presses to synchronize state.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
+          "availability_topic": "Optional MQTT LWT topic to track transmitter online/offline status (e.g. tele/tasmota_ir/LWT).",
           "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "ir_format": "Encoding format expected by your IR blaster (e.g. Home Assistant Infrared, Tasmota MQTT, Broadlink Base64)."
         }
@@ -102,7 +110,12 @@
       "unknown": "[%key:common::config_flow::error::unknown%]",
       "invalid_install_date": "Date cannot be in the future or more than 8 months back (MirAIe keeps ~8 months)",
       "blaster_required": "An IR Transmitter entity is required when control mode is set to IR Only or Hybrid.",
-      "blaster_required_for_ir": "An IR Transmitter entity must be selected when Infrared Primary is chosen."
+      "blaster_required_for_ir": "An IR Transmitter entity must be selected when Infrared Primary is chosen.",
+      "missing_tasmota_endpoint": "Please provide either an MQTT command topic or a remote entity.",
+      "both_endpoints_provided": "Please configure either a remote entity or an MQTT topic, not both.",
+      "invalid_mqtt_topic": "Invalid MQTT command topic. Topic must contain '/' and cannot contain '+' or '#' wildcards.",
+      "invalid_availability_topic": "Invalid MQTT availability topic. Topic must contain '/' and cannot contain '+' or '#' wildcards.",
+      "topic_not_supported_for_format": "Direct MQTT topics are only supported when IR format is set to Tasmota."
     },
     "abort": {
       "already_configured": "[%key:common::config_flow::abort::already_configured_device%]",
@@ -139,18 +152,22 @@
         "description": "Configure options for **{device_name}** (Model: **{model_code}**).",
         "data": {
           "install_date": "Energy History Start Date",
+          "mqtt_topic": "MQTT Command Topic (Tasmota)",
           "blaster_entity_id": "IR Transmitter Entity",
           "receiver_entity_id": "IR Receiver Entity (Optional)",
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
+          "availability_topic": "MQTT Availability Topic (Optional)",
           "availability_entity_id": "Availability / Status Entity (Optional)",
           "ir_format": "IR Protocol / Format",
           "primary_backend": "Primary Control",
           "hybrid_submode": "Hybrid Control Mode"
         },
         "data_description": {
+          "mqtt_topic": "MQTT command topic to dispatch Tasmota IR payloads (e.g. cmnd/tasmota_ir/IRsend).",
           "blaster_entity_id": "Entity used to transmit infrared commands to the AC unit.",
           "receiver_entity_id": "Optional entity used to listen for physical remote control button presses to synchronize state.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
+          "availability_topic": "Optional MQTT LWT topic to track transmitter online/offline status (e.g. tele/tasmota_ir/LWT).",
           "availability_entity_id": "Optional smart plug, router device tracker, status sensor, or helper to monitor blaster availability.",
           "primary_backend": "Default transport used to dispatch commands in Hybrid mode.",
           "ir_format": "Encoding format expected by your IR transmitter (e.g. Hardware-Tested Native Infrared, Capture-Verified Tasmota MQTT, Broadlink/Tuya Base64)."
@@ -158,7 +175,12 @@
       }
     },
     "error": {
-      "invalid_install_date": "Date cannot be in the future or more than 8 months back (MirAIe keeps ~8 months)"
+      "invalid_install_date": "Date cannot be in the future or more than 8 months back (MirAIe keeps ~8 months)",
+      "missing_tasmota_endpoint": "Please provide either an MQTT command topic or a remote entity.",
+      "both_endpoints_provided": "Please configure either a remote entity or an MQTT topic, not both.",
+      "invalid_mqtt_topic": "Invalid MQTT command topic. Topic must contain '/' and cannot contain '+' or '#' wildcards.",
+      "invalid_availability_topic": "Invalid MQTT availability topic. Topic must contain '/' and cannot contain '+' or '#' wildcards.",
+      "topic_not_supported_for_format": "Direct MQTT topics are only supported when IR format is set to Tasmota."
     }
   },
 

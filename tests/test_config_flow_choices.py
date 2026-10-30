@@ -52,6 +52,86 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res_final["data"]["model_code"], "CS-CU-KN18YKY")
         self.assertEqual(res_final["options"]["blaster_entity_id"], "infrared.guest_room_ir_blaster")
 
+    async def test_attach_blaster_tasmota_mqtt_success(self):
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow._device_data = {
+            "name": "Guest Room AC",
+            "model_code": "CS-CU-KN18YKY",
+            "control_mode": "ir",
+            "capabilities": {},
+        }
+
+        res = await flow.async_step_attach_blaster({
+            "ir_format": "tasmota",
+            "mqtt_topic": "cmnd/tasmota_bedroom/IRsend",
+            "availability_topic": "tele/tasmota_bedroom/LWT",
+        })
+        self.assertEqual(res["type"], "create_entry")
+        self.assertEqual(res["options"]["blaster_entity_id"], "cmnd/tasmota_bedroom/IRsend")
+        self.assertEqual(res["options"]["mqtt_topic"], "cmnd/tasmota_bedroom/IRsend")
+        self.assertEqual(res["options"]["availability_topic"], "tele/tasmota_bedroom/LWT")
+
+    async def test_attach_blaster_tasmota_validation_errors(self):
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow._device_data = {
+            "name": "Guest Room AC",
+            "model_code": "CS-CU-KN18YKY",
+            "control_mode": "ir",
+            "capabilities": {},
+        }
+
+        # 1. Both endpoints provided
+        res1 = await flow.async_step_attach_blaster({
+            "ir_format": "tasmota",
+            "blaster_entity_id": "remote.bedroom_blaster",
+            "mqtt_topic": "cmnd/tasmota_bedroom/IRsend",
+        })
+        self.assertEqual(res1["type"], "form")
+        self.assertEqual(res1["errors"]["base"], "both_endpoints_provided")
+
+        # 2. Neither endpoint provided
+        res2 = await flow.async_step_attach_blaster({
+            "ir_format": "tasmota",
+            "blaster_entity_id": "",
+            "mqtt_topic": "",
+        })
+        self.assertEqual(res2["type"], "form")
+        self.assertEqual(res2["errors"]["base"], "missing_tasmota_endpoint")
+
+        # 3. Invalid MQTT topic (no slash or has wildcards)
+        res3 = await flow.async_step_attach_blaster({
+            "ir_format": "tasmota",
+            "mqtt_topic": "invalid_topic_without_slash",
+        })
+        self.assertEqual(res3["type"], "form")
+        self.assertEqual(res3["errors"]["base"], "invalid_mqtt_topic")
+
+        res3b = await flow.async_step_attach_blaster({
+            "ir_format": "tasmota",
+            "mqtt_topic": "cmnd/+/IRsend",
+        })
+        self.assertEqual(res3b["type"], "form")
+        self.assertEqual(res3b["errors"]["base"], "invalid_mqtt_topic")
+
+        # 4. Invalid availability topic
+        res4 = await flow.async_step_attach_blaster({
+            "ir_format": "tasmota",
+            "mqtt_topic": "cmnd/tasmota/IRsend",
+            "availability_topic": "tele/#",
+        })
+        self.assertEqual(res4["type"], "form")
+        self.assertEqual(res4["errors"]["base"], "invalid_availability_topic")
+
+        # 5. Topic not supported for non-tasmota format
+        res5 = await flow.async_step_attach_blaster({
+            "ir_format": "broadlink",
+            "mqtt_topic": "cmnd/tasmota/IRsend",
+        })
+        self.assertEqual(res5["type"], "form")
+        self.assertEqual(res5["errors"]["base"], "topic_not_supported_for_format")
+
     async def test_options_flow_add_manual_device(self):
         handler = OptionsFlowHandler()
         mock_entry = MagicMock()

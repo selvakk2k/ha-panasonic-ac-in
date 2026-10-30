@@ -13,6 +13,7 @@ from homeassistant.helpers.issue_registry import IssueSeverity, async_create_iss
 
 from .const import NON_RESYNCABLE_IR_MODES
 from .logger import LOGGER
+from .utils import is_mqtt_topic, emitter_available
 try:
     from panasonic_ac_models import ACModelLookup, generate_ir_code, decode_ir_code  # type: ignore[import-not-found, import-untyped]
 except ImportError:
@@ -84,6 +85,7 @@ class MirAIeDeviceCoordinator:
         ir_format: str = "auto",
         lookup=None,
         subentry_id: Optional[str] = None,  # Backward-compatible alias
+        availability_topic: Optional[str] = None,
     ):
         self.hass = hass
         resolved_entry_id = entry_id or subentry_id or ""
@@ -99,6 +101,7 @@ class MirAIeDeviceCoordinator:
         self.receiver_entity_id = receiver_entity_id
         self.temperature_sensor_entity_id = temperature_sensor_entity_id
         self.availability_entity_id = availability_entity_id
+        self.availability_topic = availability_topic
         self.ir_format = ir_format
         self.hub: Any = None
         self._unsub_receiver: Optional[Callable[[], None]] = None
@@ -146,7 +149,7 @@ class MirAIeDeviceCoordinator:
         # Operational diagnostics
         self.cloud_mqtt_connected = False
         self.device_online = False
-        self.ir_blaster_available = False
+        self.ir_blaster_available = True if is_mqtt_topic(blaster_entity_id) else False
         self._working_ir_format: Optional[str] = (
             ir_format if ir_format and ir_format.lower() not in ("auto", "") else None
         )
@@ -180,6 +183,15 @@ class MirAIeDeviceCoordinator:
         """Return True if IR blaster is available in HA and not cut off by sensor."""
         if not self.blaster_entity_id:
             return False
+        if is_mqtt_topic(self.blaster_entity_id):
+            if not self.ir_blaster_available:
+                return False
+            return emitter_available(
+                self.hass,
+                self.blaster_entity_id,
+                self.availability_entity_id,
+                self.ir_blaster_available,
+            )
         avail = self.ir_blaster_available
         if not avail and hasattr(self, "hass") and self.hass.states:
             st = self.hass.states.get(self.blaster_entity_id)
@@ -443,7 +455,8 @@ class MirAIeDeviceCoordinator:
             return True
 
         # Determine target domain & service call based on blaster_entity_id
-        target_domain = self.blaster_entity_id.split(".")[0]
+        is_mqtt = is_mqtt_topic(self.blaster_entity_id)
+        target_domain = "mqtt" if is_mqtt else self.blaster_entity_id.split(".")[0]
         success = False
 
         if target_domain == "infrared":
@@ -499,14 +512,21 @@ class MirAIeDeviceCoordinator:
                 except Exception as err:
                     LOGGER.debug("Native infrared helper threw exception for %s: %s, falling back to remote.send_command", self.device_id, err)
 
+        aeha_hex = ir_data.get("aeha_hex") or ir_data.get("ahea_hex") or ""
+        tasmota_json = ir_data.get("tasmota_json") or "{}"
+
         if target_domain == "mqtt":
             # MQTT / Tasmota transmitter topic
+            if hasattr(self.hass, "services") and hasattr(self.hass.services, "has_service"):
+                if not self.hass.services.has_service("mqtt", "publish"):
+                    LOGGER.error("Device %s: MQTT service 'mqtt.publish' is not available", self.device_id)
+                    return False
             try:
                 LOGGER.info("Device %s: Transmitting IR via mqtt.publish -> %s", self.device_id, self.blaster_entity_id)
                 await self.hass.services.async_call(
                     "mqtt",
                     "publish",
-                    {"topic": self.blaster_entity_id, "payload": ir_data["tasmota_json"]},
+                    {"topic": self.blaster_entity_id, "payload": tasmota_json},
                     blocking=False,
                 )
                 return _on_success()
@@ -517,50 +537,64 @@ class MirAIeDeviceCoordinator:
         # All standard remote blasters (Broadlink, ESPHome, Tuya, Zigbee, etc.): remote.send_command
         if self._working_ir_format:
             format_map = {
-                "Broadlink b64:": [f"b64:{ir_data['broadlink_b64']}"],
-                "Broadlink raw b64:": [ir_data["broadlink_b64"]],
-                "Tuya b64:": [ir_data["tuya_b64"]],
-                "Raw pulse array:": [ir_data["raw"]],
-                "Raw positive pulse array:": [[abs(p) for p in ir_data["raw"]]],
+                "tasmota": [aeha_hex],
+                "tasmota_json": [tasmota_json],
+                "broadlink": [f"b64:{ir_data.get('broadlink_b64', '')}"],
+                "tuya": [ir_data.get("tuya_b64", "")],
+                "raw": [ir_data.get("raw", [])],
+                "Broadlink b64:": [f"b64:{ir_data.get('broadlink_b64', '')}"],
+                "Broadlink raw b64:": [ir_data.get("broadlink_b64", "")],
+                "Tuya b64:": [ir_data.get("tuya_b64", "")],
+                "Tasmota hex:": [aeha_hex],
+                "Tasmota JSON:": [tasmota_json],
+                "Raw pulse array:": [ir_data.get("raw", [])],
+                "Raw positive pulse array:": [[abs(p) for p in ir_data.get("raw", [])]],
             }
-            cmd_payload = format_map.get(self._working_ir_format, [f"b64:{ir_data['broadlink_b64']}"])
-            try:
-                LOGGER.info("Device %s: Transmitting IR payload (%s) via remote.send_command -> %s", self.device_id, self._working_ir_format, self.blaster_entity_id)
-                await self.hass.services.async_call(
-                    "remote",
-                    "send_command",
-                    {"entity_id": self.blaster_entity_id, "command": cmd_payload},
-                    blocking=False,
-                )
-                return _on_success()
-            except Exception as err:
-                LOGGER.warning("Cached IR format %s failed for %s: %s, re-detecting format", self._working_ir_format, self.device_id, err)
-                self._working_ir_format = None
+            cmd_payload = format_map.get(self._working_ir_format)
+            if cmd_payload is not None:
+                try:
+                    LOGGER.info("Device %s: Transmitting IR payload (%s) via remote.send_command -> %s", self.device_id, self._working_ir_format, self.blaster_entity_id)
+                    await self.hass.services.async_call(
+                        "remote",
+                        "send_command",
+                        {"entity_id": self.blaster_entity_id, "command": cmd_payload},
+                        blocking=False,
+                    )
+                    return _on_success()
+                except Exception as err:
+                    LOGGER.warning("Cached IR format %s failed for %s: %s, re-detecting format", self._working_ir_format, self.device_id, err)
+                    self._working_ir_format = None
 
         # Format detection / candidate list based on user configuration
         fmt = (self.ir_format or "auto").lower()
         if fmt == "raw":
             transmission_attempts = [
-                ("Raw pulse array:", [ir_data["raw"]]),
-                ("Raw positive pulse array:", [[abs(p) for p in ir_data["raw"]]]),
+                ("Raw pulse array:", [ir_data.get("raw", [])]),
+                ("Raw positive pulse array:", [[abs(p) for p in ir_data.get("raw", [])]]),
             ]
         elif fmt == "broadlink":
             transmission_attempts = [
-                ("Broadlink b64:", [f"b64:{ir_data['broadlink_b64']}"]),
-                ("Broadlink raw b64:", [ir_data["broadlink_b64"]]),
+                ("Broadlink b64:", [f"b64:{ir_data.get('broadlink_b64', '')}"]),
+                ("Broadlink raw b64:", [ir_data.get("broadlink_b64", "")]),
             ]
         elif fmt == "tuya":
             transmission_attempts = [
-                ("Tuya b64:", [ir_data["tuya_b64"]]),
+                ("Tuya b64:", [ir_data.get("tuya_b64", "")]),
+            ]
+        elif fmt == "tasmota":
+            transmission_attempts = [
+                ("Tasmota hex:", [aeha_hex]),
+                ("Tasmota JSON:", [tasmota_json]),
             ]
         else:
-            # Auto-detect: prioritize standard Raw microsecond pulses (ESPHome / HA), then Broadlink, then Tuya
+            # Auto-detect: prioritize standard Raw microsecond pulses (ESPHome / HA), then Broadlink, then Tuya, then Tasmota
             transmission_attempts = [
-                ("Raw pulse array:", [ir_data["raw"]]),
-                ("Raw positive pulse array:", [[abs(p) for p in ir_data["raw"]]]),
-                ("Broadlink b64:", [f"b64:{ir_data['broadlink_b64']}"]),
-                ("Broadlink raw b64:", [ir_data["broadlink_b64"]]),
-                ("Tuya b64:", [ir_data["tuya_b64"]]),
+                ("Raw pulse array:", [ir_data.get("raw", [])]),
+                ("Raw positive pulse array:", [[abs(p) for p in ir_data.get("raw", [])]]),
+                ("Broadlink b64:", [f"b64:{ir_data.get('broadlink_b64', '')}"]),
+                ("Broadlink raw b64:", [ir_data.get("broadlink_b64", "")]),
+                ("Tuya b64:", [ir_data.get("tuya_b64", "")]),
+                ("Tasmota hex:", [aeha_hex]),
             ]
 
         for label, cmd_payload in transmission_attempts:
@@ -720,33 +754,49 @@ class MirAIeDeviceCoordinator:
         from homeassistant.helpers.event import async_track_state_change_event
 
         if self.blaster_entity_id:
-            from homeassistant.helpers import entity_registry as er
+            if is_mqtt_topic(self.blaster_entity_id):
+                self._is_esphome_blaster = False
+                self.ir_blaster_available = emitter_available(
+                    self.hass,
+                    self.blaster_entity_id,
+                    self.availability_entity_id,
+                )
+                LOGGER.info(
+                    "Device %s: Registered MQTT IR transmitter topic %s (available=%s)",
+                    self.device_id,
+                    self.blaster_entity_id,
+                    self.ir_blaster_available,
+                )
+                if self.availability_topic and hasattr(self.hass, "async_create_task"):
+                    self.hass.async_create_task(self._async_subscribe_availability_topic())
+            else:
+                from homeassistant.helpers import entity_registry as er
 
-            ent_reg = er.async_get(self.hass) if hasattr(er, "async_get") else None
-            entry = None
-            if ent_reg:
-                if hasattr(ent_reg, "async_get"):
-                    entry = ent_reg.async_get(self.blaster_entity_id)
-                elif hasattr(ent_reg, "get"):
-                    entry = ent_reg.get(self.blaster_entity_id)
-            self._is_esphome_blaster = (
-                (entry is not None and getattr(entry, "platform", None) == "esphome")
-                or self.blaster_entity_id.startswith(("infrared.", "esphome."))
-            )
-            unsub_blaster = async_track_state_change_event(
-                self.hass, [self.blaster_entity_id], self._async_blaster_state_changed
-            )
-            self._unsub_event_bus.append(unsub_blaster)
-            LOGGER.info("Device %s: Registered IR blaster state listener on entity %s (is_esphome=%s)", self.device_id, self.blaster_entity_id, self._is_esphome_blaster)
-            if hasattr(self.hass, "states") and self.hass.states:
-                blaster_st = self.hass.states.get(self.blaster_entity_id)
-                if blaster_st is not None:
-                    raw_st = str(getattr(blaster_st, "state", blaster_st)).lower()
-                    self.ir_blaster_available = raw_st not in (STATE_UNAVAILABLE, "none", "")
+                ent_reg = er.async_get(self.hass) if hasattr(er, "async_get") else None
+                entry = None
+                if ent_reg:
+                    if hasattr(ent_reg, "async_get"):
+                        entry = ent_reg.async_get(self.blaster_entity_id)
+                    elif hasattr(ent_reg, "get"):
+                        entry = ent_reg.get(self.blaster_entity_id)
+                self._is_esphome_blaster = (
+                    (entry is not None and getattr(entry, "platform", None) == "esphome")
+                    or self.blaster_entity_id.startswith(("infrared.", "esphome."))
+                )
+                unsub_blaster = async_track_state_change_event(
+                    self.hass, [self.blaster_entity_id], self._async_blaster_state_changed
+                )
+                self._unsub_event_bus.append(unsub_blaster)
+                LOGGER.info("Device %s: Registered IR blaster state listener on entity %s (is_esphome=%s)", self.device_id, self.blaster_entity_id, self._is_esphome_blaster)
+                if hasattr(self.hass, "states") and self.hass.states:
+                    blaster_st = self.hass.states.get(self.blaster_entity_id)
+                    if blaster_st is not None:
+                        raw_st = str(getattr(blaster_st, "state", blaster_st)).lower()
+                        self.ir_blaster_available = raw_st not in (STATE_UNAVAILABLE, "none", "")
+                    else:
+                        self.ir_blaster_available = True
                 else:
                     self.ir_blaster_available = True
-            else:
-                self.ir_blaster_available = True
 
         if self.availability_entity_id:
             unsub_avail = async_track_state_change_event(
@@ -1077,6 +1127,58 @@ class MirAIeDeviceCoordinator:
         self._notify_listeners()
 
         await self._async_resync_on_reconnect()
+
+    async def _async_subscribe_availability_topic(self) -> None:
+        """Subscribe to the configured MQTT availability topic (LWT)."""
+        if not self.availability_topic:
+            return
+        try:
+            from homeassistant.components import mqtt
+
+            if hasattr(mqtt, "async_subscribe"):
+                unsub = await mqtt.async_subscribe(
+                    self.hass, self.availability_topic, self._async_mqtt_lwt_message
+                )
+                if unsub:
+                    self._unsub_event_bus.append(unsub)
+                LOGGER.info(
+                    "Device %s: Subscribed to MQTT availability topic %s",
+                    self.device_id,
+                    self.availability_topic,
+                )
+        except Exception as err:
+            LOGGER.warning(
+                "Could not subscribe to MQTT availability topic %s: %s",
+                self.availability_topic,
+                err,
+            )
+
+    @callback
+    def _async_mqtt_lwt_message(self, msg: Any) -> None:
+        """Handle MQTT LWT availability payload."""
+        raw_payload = getattr(msg, "payload", msg)
+        payload = str(raw_payload).strip().lower()
+        LOGGER.debug(
+            "Device %s: MQTT availability message on %s: %s",
+            self.device_id,
+            self.availability_topic,
+            payload,
+        )
+        was_avail = self.ir_blaster_available
+        if payload in ("online", "1", "true", "connected", "home", "on"):
+            if self.availability_entity_id and hasattr(self, "hass") and self.hass.states:
+                st = self.hass.states.get(self.availability_entity_id)
+                if st is not None and not is_blaster_available_by_sensor(st.state, self.availability_entity_id):
+                    self.ir_blaster_available = False
+                    self._notify_listeners()
+                    return
+            self.ir_blaster_available = True
+            self._notify_listeners()
+            if not was_avail and hasattr(self.hass, "async_create_task"):
+                self.hass.async_create_task(self._async_resync_on_reconnect())
+        elif payload in ("offline", "0", "false", "disconnected", "not_home", "away", "off"):
+            self.ir_blaster_available = False
+            self._notify_listeners()
 
     @callback
     def _apply_decoded_ir_state(self, decoded: Dict[str, Any]) -> None:

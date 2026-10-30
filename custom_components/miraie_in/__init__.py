@@ -24,9 +24,11 @@ import asyncio
 from .const import (
     CONF_INSTALL_DATE,
     CONF_BLASTER_ENTITY_ID,
+    CONF_MQTT_TOPIC,
     CONF_RECEIVER_ENTITY_ID,
     CONF_ROOM_TEMP_SENSOR,
     CONF_AVAILABILITY_ENTITY_ID,
+    CONF_AVAILABILITY_TOPIC,
     CONF_IR_FORMAT,
     CONF_PRIMARY_BACKEND,
     CONF_HYBRID_SUBMODE,
@@ -469,12 +471,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     for device in target_devices:
         dev_opt = devices_opt.get(device.id, {})
         blaster_id = dev_opt.get(CONF_BLASTER_ENTITY_ID) or entry.options.get(CONF_BLASTER_ENTITY_ID) or entry.data.get(CONF_BLASTER_ENTITY_ID)
+        mqtt_topic = dev_opt.get(CONF_MQTT_TOPIC) or entry.options.get(CONF_MQTT_TOPIC) or entry.data.get(CONF_MQTT_TOPIC)
+        if mqtt_topic:
+            blaster_id = mqtt_topic
         receiver_id = dev_opt.get(CONF_RECEIVER_ENTITY_ID) or entry.options.get(CONF_RECEIVER_ENTITY_ID) or entry.data.get(CONF_RECEIVER_ENTITY_ID)
         primary = dev_opt.get(CONF_PRIMARY_BACKEND) or entry.options.get(CONF_PRIMARY_BACKEND, "cloud" if not is_ir_only else "ir")
         submode = dev_opt.get(CONF_HYBRID_SUBMODE) or entry.options.get(CONF_HYBRID_SUBMODE, "auto" if not is_ir_only else "manual")
         ir_fmt = dev_opt.get(CONF_IR_FORMAT) or entry.options.get(CONF_IR_FORMAT) or entry.data.get(CONF_IR_FORMAT) or dev_opt.get("working_ir_format") or entry.options.get("working_ir_format") or "auto"
         temp_sensor_id = dev_opt.get("room_temp_sensor") or entry.options.get("room_temp_sensor") or entry.data.get("room_temp_sensor") or dev_opt.get(CONF_ROOM_TEMP_SENSOR) or entry.options.get(CONF_ROOM_TEMP_SENSOR) or entry.data.get(CONF_ROOM_TEMP_SENSOR)
         availability_id = dev_opt.get(CONF_AVAILABILITY_ENTITY_ID) or entry.options.get(CONF_AVAILABILITY_ENTITY_ID) or entry.data.get(CONF_AVAILABILITY_ENTITY_ID)
+        avail_topic = dev_opt.get(CONF_AVAILABILITY_TOPIC) or entry.options.get(CONF_AVAILABILITY_TOPIC) or entry.data.get(CONF_AVAILABILITY_TOPIC)
 
         model_code = dev_opt.get("model_code") or entry.options.get("model_code") or entry.data.get("model_code") or getattr(getattr(device, "details", None), "model_number", "") or ""
 
@@ -488,6 +494,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             receiver_entity_id=receiver_id,
             temperature_sensor_entity_id=temp_sensor_id,
             availability_entity_id=availability_id,
+            availability_topic=avail_topic,
             primary_backend=primary,
             hybrid_submode=submode,
             ir_format=ir_fmt,

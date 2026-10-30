@@ -19,15 +19,23 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_INSTALL_DATE,
     CONF_BLASTER_ENTITY_ID,
+    CONF_MQTT_TOPIC,
     CONF_RECEIVER_ENTITY_ID,
     CONF_ROOM_TEMP_SENSOR,
     CONF_AVAILABILITY_ENTITY_ID,
+    CONF_AVAILABILITY_TOPIC,
     CONF_IR_FORMAT,
     CONF_PRIMARY_BACKEND,
     CONF_HYBRID_SUBMODE,
     DOMAIN,
 )
-from .utils import six_months_ago, eight_months_ago, is_ac_device
+from .utils import (
+    six_months_ago,
+    eight_months_ago,
+    is_ac_device,
+    is_mqtt_topic,
+    validate_mqtt_topic,
+)
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -79,6 +87,7 @@ def build_cloud_devices_schema(default_install_date: str) -> vol.Schema:
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),
+            vol.Optional(CONF_MQTT_TOPIC): selector.TextSelector(),
             vol.Optional(CONF_BLASTER_ENTITY_ID): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["infrared", "remote"])
             ),
@@ -88,6 +97,7 @@ def build_cloud_devices_schema(default_install_date: str) -> vol.Schema:
             vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
             ),
+            vol.Optional(CONF_AVAILABILITY_TOPIC): selector.TextSelector(),
             vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
             ),
@@ -371,12 +381,34 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors=errors,
             )
 
-        blaster_val = user_input.get(CONF_BLASTER_ENTITY_ID, "").strip()
+        blaster_val = user_input.get(CONF_BLASTER_ENTITY_ID, "").strip() if user_input.get(CONF_BLASTER_ENTITY_ID) else ""
+        mqtt_topic_raw = user_input.get(CONF_MQTT_TOPIC)
+        mqtt_topic = "" if (mqtt_topic_raw is None or str(mqtt_topic_raw).lower() in ("none", "null", "")) else str(mqtt_topic_raw).strip()
+        avail_topic_raw = user_input.get(CONF_AVAILABILITY_TOPIC)
+        avail_topic = "" if (avail_topic_raw is None or str(avail_topic_raw).lower() in ("none", "null", "")) else str(avail_topic_raw).strip()
         backend_val = user_input.get(CONF_PRIMARY_BACKEND, "cloud")
         submode_val = user_input.get(CONF_HYBRID_SUBMODE, "auto")
+        ir_fmt = user_input.get(CONF_IR_FORMAT, "auto")
 
-        if backend_val == "ir" and not blaster_val:
+        if ir_fmt == "tasmota":
+            if mqtt_topic and blaster_val:
+                errors["base"] = "both_endpoints_provided"
+            elif mqtt_topic and not validate_mqtt_topic(mqtt_topic):
+                errors["base"] = "invalid_mqtt_topic"
+            elif avail_topic and not validate_mqtt_topic(avail_topic):
+                errors["base"] = "invalid_availability_topic"
+            elif mqtt_topic:
+                blaster_val = mqtt_topic
+        else:
+            if mqtt_topic:
+                errors["base"] = "topic_not_supported_for_format"
+            elif avail_topic and not validate_mqtt_topic(avail_topic):
+                errors["base"] = "invalid_availability_topic"
+
+        if backend_val == "ir" and not blaster_val and not errors:
             errors[CONF_BLASTER_ENTITY_ID] = "blaster_required_for_ir"
+
+        if errors:
             return self.async_show_form(
                 step_id="cloud_devices",
                 data_schema=build_cloud_devices_schema(
@@ -398,6 +430,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         }
         if blaster_val:
             dev_opt[CONF_BLASTER_ENTITY_ID] = blaster_val
+        if mqtt_topic:
+            dev_opt[CONF_MQTT_TOPIC] = mqtt_topic
+        if avail_topic:
+            dev_opt[CONF_AVAILABILITY_TOPIC] = avail_topic
         receiver_raw = user_input.get(CONF_RECEIVER_ENTITY_ID)
         if receiver_raw and str(receiver_raw).lower() not in ("none", "null", ""):
             dev_opt[CONF_RECEIVER_ENTITY_ID] = str(receiver_raw).strip()
@@ -407,7 +443,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         avail_raw = user_input.get(CONF_AVAILABILITY_ENTITY_ID)
         if avail_raw and str(avail_raw).lower() not in ("none", "null", ""):
             dev_opt[CONF_AVAILABILITY_ENTITY_ID] = str(avail_raw).strip()
-        ir_fmt = user_input.get(CONF_IR_FORMAT)
         if ir_fmt:
             dev_opt[CONF_IR_FORMAT] = ir_fmt
 
@@ -610,7 +645,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors = {}
 
         if user_input is not None:
-            blaster_id = user_input.get(CONF_BLASTER_ENTITY_ID, "").strip()
+            blaster_id = user_input.get(CONF_BLASTER_ENTITY_ID, "").strip() if user_input.get(CONF_BLASTER_ENTITY_ID) else ""
+            mqtt_topic_raw = user_input.get(CONF_MQTT_TOPIC)
+            mqtt_topic = "" if (mqtt_topic_raw is None or str(mqtt_topic_raw).lower() in ("none", "null", "")) else str(mqtt_topic_raw).strip()
+            avail_topic_raw = user_input.get(CONF_AVAILABILITY_TOPIC)
+            avail_topic = "" if (avail_topic_raw is None or str(avail_topic_raw).lower() in ("none", "null", "")) else str(avail_topic_raw).strip()
             receiver_raw = user_input.get(CONF_RECEIVER_ENTITY_ID)
             receiver_id = "" if (receiver_raw is None or str(receiver_raw).lower() in ("none", "null", "")) else str(receiver_raw).strip()
             temp_sensor_raw = user_input.get(CONF_ROOM_TEMP_SENSOR)
@@ -618,9 +657,27 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             avail_raw = user_input.get(CONF_AVAILABILITY_ENTITY_ID)
             avail_id = "" if (avail_raw is None or str(avail_raw).lower() in ("none", "null", "")) else str(avail_raw).strip()
             ir_fmt = user_input.get(CONF_IR_FORMAT, "auto")
-            if not blaster_id:
-                errors[CONF_BLASTER_ENTITY_ID] = "blaster_required"
+
+            if ir_fmt == "tasmota":
+                if mqtt_topic and blaster_id:
+                    errors["base"] = "both_endpoints_provided"
+                elif not mqtt_topic and not blaster_id:
+                    errors["base"] = "missing_tasmota_endpoint"
+                elif mqtt_topic and not validate_mqtt_topic(mqtt_topic):
+                    errors["base"] = "invalid_mqtt_topic"
+                elif avail_topic and not validate_mqtt_topic(avail_topic):
+                    errors["base"] = "invalid_availability_topic"
+                else:
+                    blaster_id = mqtt_topic if mqtt_topic else blaster_id
             else:
+                if mqtt_topic:
+                    errors["base"] = "topic_not_supported_for_format"
+                elif not blaster_id:
+                    errors[CONF_BLASTER_ENTITY_ID] = "blaster_required"
+                elif avail_topic and not validate_mqtt_topic(avail_topic):
+                    errors["base"] = "invalid_availability_topic"
+
+            if not errors:
                 is_ir_only = (ctrl_mode == "ir")
                 data = {
                     "is_ir_only": is_ir_only,
@@ -638,12 +695,17 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_IR_FORMAT: ir_fmt,
                     "model_code": model_code,
                 }
+                if mqtt_topic:
+                    options[CONF_MQTT_TOPIC] = mqtt_topic
+                if avail_topic:
+                    options[CONF_AVAILABILITY_TOPIC] = avail_topic
                 title_suffix = "IR Only" if ctrl_mode == "ir" else "Hybrid"
                 return self.async_create_entry(title=f"{name} ({title_suffix})", data=data, options=options)
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_BLASTER_ENTITY_ID): selector.EntitySelector(
+                vol.Optional(CONF_MQTT_TOPIC): selector.TextSelector(),
+                vol.Optional(CONF_BLASTER_ENTITY_ID): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["infrared", "remote"])
                 ),
                 vol.Optional(CONF_RECEIVER_ENTITY_ID): selector.EntitySelector(
@@ -652,6 +714,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
                 ),
+                vol.Optional(CONF_AVAILABILITY_TOPIC): selector.TextSelector(),
                 vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
                 ),
@@ -782,6 +845,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return vol.Schema(
             {
                 vol.Optional(CONF_INSTALL_DATE): selector.DateSelector(),
+                vol.Optional(CONF_MQTT_TOPIC): selector.TextSelector(),
                 vol.Optional(CONF_BLASTER_ENTITY_ID): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["infrared", "remote"])
                 ),
@@ -791,6 +855,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
                 ),
+                vol.Optional(CONF_AVAILABILITY_TOPIC): selector.TextSelector(),
                 vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
                     selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
                 ),
@@ -856,6 +921,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         current_install = target_opt.get(CONF_INSTALL_DATE, current_options.get(CONF_INSTALL_DATE, default_install))
         current_blaster = target_opt.get(CONF_BLASTER_ENTITY_ID, current_options.get(CONF_BLASTER_ENTITY_ID, entry_data.get(CONF_BLASTER_ENTITY_ID, "")))
+        current_mqtt = target_opt.get(CONF_MQTT_TOPIC, current_options.get(CONF_MQTT_TOPIC, entry_data.get(CONF_MQTT_TOPIC, "")))
+        current_avail_topic = target_opt.get(CONF_AVAILABILITY_TOPIC, current_options.get(CONF_AVAILABILITY_TOPIC, entry_data.get(CONF_AVAILABILITY_TOPIC, "")))
+        if not current_mqtt and is_mqtt_topic(current_blaster):
+            current_mqtt = current_blaster
+            current_blaster = ""
         current_receiver = target_opt.get(CONF_RECEIVER_ENTITY_ID, current_options.get(CONF_RECEIVER_ENTITY_ID, entry_data.get(CONF_RECEIVER_ENTITY_ID, "")))
         current_temp_sensor = target_opt.get(CONF_ROOM_TEMP_SENSOR, current_options.get(CONF_ROOM_TEMP_SENSOR, entry_data.get(CONF_ROOM_TEMP_SENSOR, "")))
         current_avail = target_opt.get(CONF_AVAILABILITY_ENTITY_ID, current_options.get(CONF_AVAILABILITY_ENTITY_ID, entry_data.get(CONF_AVAILABILITY_ENTITY_ID, "")))
@@ -877,9 +947,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             schema = self._build_device_settings_schema()
             suggested = {
                 CONF_INSTALL_DATE: current_install,
+                CONF_MQTT_TOPIC: current_mqtt,
                 CONF_BLASTER_ENTITY_ID: current_blaster,
                 CONF_RECEIVER_ENTITY_ID: current_receiver,
                 CONF_ROOM_TEMP_SENSOR: current_temp_sensor,
+                CONF_AVAILABILITY_TOPIC: current_avail_topic,
                 CONF_AVAILABILITY_ENTITY_ID: current_avail,
                 CONF_IR_FORMAT: current_ir_fmt,
                 CONF_PRIMARY_BACKEND: current_backend,
@@ -925,6 +997,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         install_date_str = install_date.isoformat()
         blaster_raw = user_input.get(CONF_BLASTER_ENTITY_ID)
         blaster_val = "" if (blaster_raw is None or str(blaster_raw).lower() in ("none", "null", "")) else str(blaster_raw).strip()
+        mqtt_topic_raw = user_input.get(CONF_MQTT_TOPIC)
+        mqtt_topic = "" if (mqtt_topic_raw is None or str(mqtt_topic_raw).lower() in ("none", "null", "")) else str(mqtt_topic_raw).strip()
+        avail_topic_raw = user_input.get(CONF_AVAILABILITY_TOPIC)
+        avail_topic = "" if (avail_topic_raw is None or str(avail_topic_raw).lower() in ("none", "null", "")) else str(avail_topic_raw).strip()
         receiver_raw = user_input.get(CONF_RECEIVER_ENTITY_ID)
         receiver_val = "" if (receiver_raw is None or str(receiver_raw).lower() in ("none", "null", "")) else str(receiver_raw).strip()
         temp_sensor_raw = user_input.get(CONF_ROOM_TEMP_SENSOR)
@@ -933,6 +1009,50 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         avail_val = "" if (avail_raw is None or str(avail_raw).lower() in ("none", "null", "")) else str(avail_raw).strip()
         ir_fmt_val = user_input.get(CONF_IR_FORMAT, "auto")
         backend_val = user_input.get(CONF_PRIMARY_BACKEND, "cloud")
+
+        if ir_fmt_val == "tasmota":
+            if mqtt_topic and blaster_val:
+                errors["base"] = "both_endpoints_provided"
+            elif mqtt_topic and not validate_mqtt_topic(mqtt_topic):
+                errors["base"] = "invalid_mqtt_topic"
+            elif avail_topic and not validate_mqtt_topic(avail_topic):
+                errors["base"] = "invalid_availability_topic"
+            elif mqtt_topic:
+                blaster_val = mqtt_topic
+        else:
+            if mqtt_topic:
+                errors["base"] = "topic_not_supported_for_format"
+            elif avail_topic and not validate_mqtt_topic(avail_topic):
+                errors["base"] = "invalid_availability_topic"
+
+        if backend_val == "ir" and not blaster_val and not errors:
+            errors[CONF_BLASTER_ENTITY_ID] = "blaster_required_for_ir"
+
+        if errors:
+            schema = self._build_device_settings_schema()
+            suggested = {
+                CONF_INSTALL_DATE: user_input.get(CONF_INSTALL_DATE, default_install),
+                CONF_MQTT_TOPIC: mqtt_topic,
+                CONF_BLASTER_ENTITY_ID: user_input.get(CONF_BLASTER_ENTITY_ID, ""),
+                CONF_RECEIVER_ENTITY_ID: receiver_val,
+                CONF_ROOM_TEMP_SENSOR: temp_sensor_val,
+                CONF_AVAILABILITY_TOPIC: avail_topic,
+                CONF_AVAILABILITY_ENTITY_ID: avail_val,
+                CONF_IR_FORMAT: ir_fmt_val,
+                CONF_PRIMARY_BACKEND: backend_val,
+                CONF_HYBRID_SUBMODE: user_input.get(CONF_HYBRID_SUBMODE, current_submode),
+            }
+            if hasattr(self, "add_suggested_values_to_schema"):
+                schema = self.add_suggested_values_to_schema(schema, suggested)
+            return self.async_show_form(
+                step_id="device_settings",
+                data_schema=schema,
+                description_placeholders={
+                    "device_name": dev_name,
+                    "model_code": current_model,
+                },
+                errors=errors,
+            )
 
         # If adding/re-adding an IR blaster (was empty, now set), default Hybrid Automatic Control to ON ("auto")
         if not current_blaster and blaster_val:
@@ -946,6 +1066,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         new_options[CONF_INSTALL_DATE] = install_date_str
         new_options[CONF_BLASTER_ENTITY_ID] = blaster_val
+        if mqtt_topic:
+            new_options[CONF_MQTT_TOPIC] = mqtt_topic
+        else:
+            new_options.pop(CONF_MQTT_TOPIC, None)
+        if avail_topic:
+            new_options[CONF_AVAILABILITY_TOPIC] = avail_topic
+        else:
+            new_options.pop(CONF_AVAILABILITY_TOPIC, None)
         new_options[CONF_RECEIVER_ENTITY_ID] = receiver_val
         new_options[CONF_ROOM_TEMP_SENSOR] = temp_sensor_val
         new_options[CONF_AVAILABILITY_ENTITY_ID] = avail_val
@@ -960,6 +1088,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             dev_entry = dict(new_devices.get(target_id, {}))
             dev_entry[CONF_INSTALL_DATE] = install_date_str
             dev_entry[CONF_BLASTER_ENTITY_ID] = blaster_val
+            if mqtt_topic:
+                dev_entry[CONF_MQTT_TOPIC] = mqtt_topic
+            else:
+                dev_entry.pop(CONF_MQTT_TOPIC, None)
+            if avail_topic:
+                dev_entry[CONF_AVAILABILITY_TOPIC] = avail_topic
+            else:
+                dev_entry.pop(CONF_AVAILABILITY_TOPIC, None)
             dev_entry[CONF_RECEIVER_ENTITY_ID] = receiver_val
             dev_entry[CONF_ROOM_TEMP_SENSOR] = temp_sensor_val
             dev_entry[CONF_AVAILABILITY_ENTITY_ID] = avail_val
