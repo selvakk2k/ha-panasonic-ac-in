@@ -18,7 +18,7 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/selvakk2k/ha-panasonic-ac-in/issues",
   "requirements": [
-    "miraie-ac-in>=1.1.8,<2.0.0",
+    "miraie-ac-in>=1.2.0,<2.0.0",
     "panasonic-ac-models>=1.2.0,<2.0.0",
     "aiomqtt>=2.0.1,<3.0.0"
   ],

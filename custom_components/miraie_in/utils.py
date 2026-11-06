@@ -25,7 +25,7 @@ def is_ir_only_entry(entry: Any) -> bool:
         return True
     if entry_data.get("is_ir_only", False):
         return True
-    return "username" not in entry_data
+    return not entry_data.get("username")
 
 
 def get_last_sunday() -> date:

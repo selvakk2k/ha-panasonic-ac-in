@@ -43,8 +43,10 @@ class TestConfigFlowDevices(unittest.TestCase):
 
     async def async_test_options_flow_device_settings_save(self):
         """Test async_step_device_settings successfully saves options."""
+        from datetime import date, timedelta
         from tests.fixtures import MockConfigEntry, MockDevice
 
+        target_date = (date.today() - timedelta(days=60)).strftime("%Y-%m-%d")
         dev1 = MockDevice(device_id="dev1")
         entry = MockConfigEntry(
             options={"install_date": "2026-01-01", "devices": {"dev1": {"install_date": "2026-02-01"}}},
@@ -55,10 +57,10 @@ class TestConfigFlowDevices(unittest.TestCase):
         flow = self.mod_flow.OptionsFlowHandler()
         flow.config_entry = entry
 
-        res = await flow.async_step_device_settings(user_input={"install_date": "2026-03-01"})
+        res = await flow.async_step_device_settings(user_input={"install_date": target_date})
         self.assertEqual(res["type"], "create_entry")
-        self.assertEqual(res["data"]["install_date"], "2026-03-01")
-        self.assertEqual(res["data"]["devices"]["dev1"]["install_date"], "2026-03-01")
+        self.assertEqual(res["data"]["install_date"], target_date)
+        self.assertEqual(res["data"]["devices"]["dev1"]["install_date"], target_date)
 
     async def async_test_options_flow_invalid_date_error_redisplay(self):
         """Test invalid install date returns form with error."""

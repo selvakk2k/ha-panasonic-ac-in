@@ -193,7 +193,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     session = async_get_clientsession(hass)
     entry_data = get_entry_data(entry)
-    has_username = "username" in entry_data
+    has_username = bool(entry_data.get("username"))
     is_ir_only = is_ir_only_entry(entry)
 
     async def _dummy_async_coro(*args: Any, **kwargs: Any) -> None:
@@ -599,7 +599,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         entry_data = get_entry_data(entry)
-        username = entry_data.get("username", "").lower() if "username" in entry_data else None
+        username = (entry_data.get("username") or "").lower() or None
         is_ir_only = is_ir_only_entry(entry)
 
         hub_inst = getattr(entry, "runtime_data", None)

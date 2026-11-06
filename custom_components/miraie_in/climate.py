@@ -292,7 +292,8 @@ class MirAIeClimate(ClimateEntity):
         if coord:
             if not coord.has_wifi or getattr(coord, "primary_backend", "cloud") == "ir":
                 return True
-        return is_ir_only_entry(getattr(self, "entry", None))
+        entry = getattr(self, "entry", None)
+        return bool(entry) and is_ir_only_entry(entry)
 
     @property
     def available(self) -> bool:
