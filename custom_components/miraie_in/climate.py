@@ -158,8 +158,6 @@ class MirAIeClimate(ClimateEntity):
             self._attr_swing_horizontal_modes = []
 
         self._attr_supported_features = features
-        self._attr_max_temp = 30.0
-        self._attr_min_temp = 16.0
         self._attr_target_temperature_step = 1.0
         self._enable_turn_on_off_backwards_compatibility = False
         self._attr_temperature_unit = UnitOfTemperature.CELSIUS
@@ -353,15 +351,15 @@ class MirAIeClimate(ClimateEntity):
             return HVACMode.COOL
 
     @property
-    def min_temp(self) -> float:
-        return self._attr_min_temp
+    def native_min_temp(self) -> float:
+        return 16.0
 
     @property
-    def max_temp(self) -> float:
-        return self._attr_max_temp
+    def native_max_temp(self) -> float:
+        return 30.0
 
     @property
-    def current_temperature(self) -> float | None:
+    def native_current_temperature(self) -> float | None:
         # 1. External temperature sensor override from coordinator / options
         coord = getattr(self, "coordinator", None)
         if coord and getattr(coord, "temperature_sensor_entity_id", None) and self.hass:
@@ -385,7 +383,7 @@ class MirAIeClimate(ClimateEntity):
         return getattr(getattr(self, "device", None), "status", None) and getattr(self.device.status, "room_temperature", None)
 
     @property
-    def target_temperature(self) -> float | int | None:
+    def native_target_temperature(self) -> float | int | None:
         coord = getattr(self, "coordinator", None)
         if coord and coord.state and "temperature" in coord.state:
             return round(coord.state["temperature"])
@@ -393,6 +391,23 @@ class MirAIeClimate(ClimateEntity):
         if temp is None:
             return None
         return round(temp)
+
+    # Backwards compatibility accessors for older callers or mock test harnesses
+    @property
+    def min_temp(self) -> float:
+        return self.native_min_temp
+
+    @property
+    def max_temp(self) -> float:
+        return self.native_max_temp
+
+    @property
+    def current_temperature(self) -> float | None:
+        return self.native_current_temperature
+
+    @property
+    def target_temperature(self) -> float | int | None:
+        return self.native_target_temperature
 
     @property
     def preset_modes(self) -> list[str]:

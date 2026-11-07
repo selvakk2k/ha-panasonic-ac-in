@@ -342,6 +342,13 @@ class TestClimatePlatform(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(ir_climate.current_temperature, 27.5)
 
+    async def test_native_temperature_properties(self):
+        """Test that native temperature properties comply with HA 2026/2027 climate standards."""
+        self.assertEqual(self.climate.native_min_temp, 16.0)
+        self.assertEqual(self.climate.native_max_temp, 30.0)
+        self.assertEqual(self.climate.native_current_temperature, 26.0)
+        self.assertEqual(self.climate.native_target_temperature, 24)
+
     async def test_convertible_preset_transition_and_reset_to_none(self):
         """Test setting a convertible preset and resetting back to 'none' in Cool mode."""
         from homeassistant.components.climate import PRESET_NONE
