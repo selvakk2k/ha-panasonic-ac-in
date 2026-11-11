@@ -345,12 +345,52 @@ class TestClimatePlatform(unittest.IsolatedAsyncioTestCase):
     async def test_native_temperature_properties(self):
         """Test that native temperature properties comply with HA 2026.11+ climate standards."""
         self.assertEqual(self.climate._attr_native_temperature_unit, UnitOfTemperature.CELSIUS)
+        self.assertEqual(self.climate.temperature_unit, UnitOfTemperature.CELSIUS)
+        self.assertFalse(hasattr(self.climate, "_attr_temperature_unit"))
+        self.assertNotIn("current_temperature", MirAIeClimate.__dict__)
+        self.assertNotIn("target_temperature", MirAIeClimate.__dict__)
         self.assertEqual(self.climate.min_temp, 16.0)
         self.assertEqual(self.climate.max_temp, 30.0)
         self.assertEqual(self.climate.native_current_temperature, 26.0)
         self.assertEqual(self.climate.native_target_temperature, 24)
         self.assertEqual(self.climate.current_temperature, 26.0)
         self.assertEqual(self.climate.target_temperature, 24)
+
+    async def test_legacy_temperature_compatibility(self):
+        """Test compatibility on Home Assistant versions before 2026.11 without native_* support."""
+        import importlib
+        import homeassistant.components.climate as ha_climate
+        import custom_components.miraie_in.climate as climate_mod
+
+        class LegacyClimateEntity:
+            @property
+            def temperature_unit(self):
+                return self._attr_temperature_unit
+
+            @property
+            def current_temperature(self):
+                return None
+
+            @property
+            def target_temperature(self):
+                return None
+
+        orig_climate_entity = ha_climate.ClimateEntity
+        ha_climate.ClimateEntity = LegacyClimateEntity
+        try:
+            importlib.reload(climate_mod)
+            legacy_climate = climate_mod.MirAIeClimate(
+                device=self.mock_device,
+                entry=self.mock_entry,
+                coordinator=self.coordinator,
+            )
+            legacy_climate.hass = self.hass
+            self.assertEqual(legacy_climate.temperature_unit, UnitOfTemperature.CELSIUS)
+            self.assertEqual(legacy_climate.current_temperature, 26.0)
+            self.assertEqual(legacy_climate.target_temperature, 24)
+        finally:
+            ha_climate.ClimateEntity = orig_climate_entity
+            importlib.reload(climate_mod)
 
     async def test_convertible_preset_transition_and_reset_to_none(self):
         """Test setting a convertible preset and resetting back to 'none' in Cool mode."""

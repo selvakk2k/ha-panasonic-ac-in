@@ -66,6 +66,7 @@ from .logger import LOGGER
 from .utils import get_devices_for_entry, async_attach_blaster_listener, is_ir_only_entry
 
 PARALLEL_UPDATES = 0
+_HAS_NATIVE_TEMPERATURE = hasattr(ClimateEntity, "native_temperature_unit")
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -162,7 +163,10 @@ class MirAIeClimate(ClimateEntity):
         self._attr_min_temp = 16.0
         self._attr_target_temperature_step = 1.0
         self._enable_turn_on_off_backwards_compatibility = False
-        self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+        if _HAS_NATIVE_TEMPERATURE:
+            self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
+        else:
+            self._attr_temperature_unit = UnitOfTemperature.CELSIUS
         self._attr_precision = PRECISION_WHOLE
         self._attr_unique_id = device.id
         self._auto_mode_switch_time: float = 0.0
@@ -393,6 +397,18 @@ class MirAIeClimate(ClimateEntity):
         if temp is None:
             return None
         return round(temp)
+
+    if not _HAS_NATIVE_TEMPERATURE:
+
+        @property
+        def current_temperature(self) -> float | None:
+            """Return current temperature for Home Assistant versions before 2026.11."""
+            return self.native_current_temperature
+
+        @property
+        def target_temperature(self) -> float | int | None:
+            """Return target temperature for Home Assistant versions before 2026.11."""
+            return self.native_target_temperature
 
     @property
     def preset_modes(self) -> list[str]:

@@ -257,6 +257,14 @@ def setup_ha_stubs():
 
     class ClimateEntity:
         @property
+        def native_temperature_unit(self):
+            return getattr(self, "_attr_native_temperature_unit", None)
+
+        @property
+        def temperature_unit(self):
+            return self.native_temperature_unit
+
+        @property
         def min_temp(self):
             return getattr(self, "_attr_min_temp", None)
 
