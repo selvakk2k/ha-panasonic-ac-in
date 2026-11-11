@@ -158,9 +158,11 @@ class MirAIeClimate(ClimateEntity):
             self._attr_swing_horizontal_modes = []
 
         self._attr_supported_features = features
+        self._attr_max_temp = 30.0
+        self._attr_min_temp = 16.0
         self._attr_target_temperature_step = 1.0
         self._enable_turn_on_off_backwards_compatibility = False
-        self._attr_temperature_unit = UnitOfTemperature.CELSIUS
+        self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
         self._attr_precision = PRECISION_WHOLE
         self._attr_unique_id = device.id
         self._auto_mode_switch_time: float = 0.0
@@ -351,12 +353,12 @@ class MirAIeClimate(ClimateEntity):
             return HVACMode.COOL
 
     @property
-    def native_min_temp(self) -> float:
-        return 16.0
+    def min_temp(self) -> float:
+        return self._attr_min_temp
 
     @property
-    def native_max_temp(self) -> float:
-        return 30.0
+    def max_temp(self) -> float:
+        return self._attr_max_temp
 
     @property
     def native_current_temperature(self) -> float | None:
@@ -391,23 +393,6 @@ class MirAIeClimate(ClimateEntity):
         if temp is None:
             return None
         return round(temp)
-
-    # Backwards compatibility accessors for older callers or mock test harnesses
-    @property
-    def min_temp(self) -> float:
-        return self.native_min_temp
-
-    @property
-    def max_temp(self) -> float:
-        return self.native_max_temp
-
-    @property
-    def current_temperature(self) -> float | None:
-        return self.native_current_temperature
-
-    @property
-    def target_temperature(self) -> float | int | None:
-        return self.native_target_temperature
 
     @property
     def preset_modes(self) -> list[str]:

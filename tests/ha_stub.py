@@ -255,6 +255,32 @@ def setup_ha_stubs():
         DRY = "dry"
         FAN_ONLY = "fan_only"
 
+    class ClimateEntity:
+        @property
+        def min_temp(self):
+            return getattr(self, "_attr_min_temp", None)
+
+        @property
+        def max_temp(self):
+            return getattr(self, "_attr_max_temp", None)
+
+        @property
+        def current_temperature(self):
+            return getattr(
+                self,
+                "native_current_temperature",
+                getattr(self, "_attr_current_temperature", None),
+            )
+
+        @property
+        def target_temperature(self):
+            return getattr(
+                self,
+                "native_target_temperature",
+                getattr(self, "_attr_target_temperature", None),
+            )
+
+    homeassistant.components.climate.ClimateEntity = ClimateEntity
     homeassistant.components.climate.ClimateEntityFeature = ClimateEntityFeature
     homeassistant.components.climate.HVACMode = HVACMode
     homeassistant.components.climate.PRESET_ECO = "eco"

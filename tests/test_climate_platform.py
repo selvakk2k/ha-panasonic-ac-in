@@ -115,7 +115,7 @@ class TestClimatePlatform(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.climate._attr_unique_id, "dev_test")
         self.assertIsNone(self.climate.name)
         self.assertIsNone(self.climate._attr_name)
-        self.assertEqual(self.climate._attr_temperature_unit, UnitOfTemperature.CELSIUS)
+        self.assertEqual(self.climate._attr_native_temperature_unit, UnitOfTemperature.CELSIUS)
         self.assertEqual(self.climate.target_temperature, 24)
         self.assertEqual(self.climate.current_temperature, 26.0)
         self.assertEqual(self.climate.hvac_mode, "cool")
@@ -343,11 +343,14 @@ class TestClimatePlatform(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ir_climate.current_temperature, 27.5)
 
     async def test_native_temperature_properties(self):
-        """Test that native temperature properties comply with HA 2026/2027 climate standards."""
-        self.assertEqual(self.climate.native_min_temp, 16.0)
-        self.assertEqual(self.climate.native_max_temp, 30.0)
+        """Test that native temperature properties comply with HA 2026.11+ climate standards."""
+        self.assertEqual(self.climate._attr_native_temperature_unit, UnitOfTemperature.CELSIUS)
+        self.assertEqual(self.climate.min_temp, 16.0)
+        self.assertEqual(self.climate.max_temp, 30.0)
         self.assertEqual(self.climate.native_current_temperature, 26.0)
         self.assertEqual(self.climate.native_target_temperature, 24)
+        self.assertEqual(self.climate.current_temperature, 26.0)
+        self.assertEqual(self.climate.target_temperature, 24)
 
     async def test_convertible_preset_transition_and_reset_to_none(self):
         """Test setting a convertible preset and resetting back to 'none' in Cool mode."""
