@@ -75,8 +75,8 @@ class MirAIeDeviceCoordinator:
         device_id: str = "",
         model_code: str = "",
         has_wifi: bool = True,
-        control_mode: str = "cloud",  # "cloud", "ir", "hybrid"
-        primary_backend: str = "cloud",  # "cloud" or "ir"
+        control_mode: str = "cloud",  # "cloud", "ir", "hybrid", "local_udp"
+        primary_backend: str = "cloud",  # "local_udp", "cloud", or "ir"
         hybrid_submode: str = "auto",  # "auto" or "manual"
         blaster_entity_id: Optional[str] = None,
         receiver_entity_id: Optional[str] = None,
@@ -86,16 +86,23 @@ class MirAIeDeviceCoordinator:
         lookup=None,
         subentry_id: Optional[str] = None,  # Backward-compatible alias
         availability_topic: Optional[str] = None,
+        *,
+        secondary_backend: Optional[str] = None,
+        tertiary_backend: Optional[str] = None,
+        device: Optional[Any] = None,
     ):
         self.hass = hass
         resolved_entry_id = entry_id or subentry_id or ""
         self.entry_id = resolved_entry_id
         self.subentry_id = resolved_entry_id  # Kept as alias
         self.device_id = device_id
+        self.device = device
         self.model_code = model_code
         self.has_wifi = has_wifi
         self.control_mode = control_mode
         self.primary_backend = primary_backend
+        self.secondary_backend = secondary_backend
+        self.tertiary_backend = tertiary_backend
         self.hybrid_submode = hybrid_submode
         self.blaster_entity_id = blaster_entity_id
         self.receiver_entity_id = receiver_entity_id
@@ -458,6 +465,18 @@ class MirAIeDeviceCoordinator:
                     preset=preset,
                     origin=origin,
                 )
+
+            # Trigger fast ~20ms state verification via Local UDP (or Cloud MQTT for non-UDP ACs)
+            if hasattr(self, "hass") and hasattr(self.hass, "async_create_task") and callable(self.hass.async_create_task):
+                try:
+                    task = self.hass.async_create_task(self.async_verify_physical_state_after_ir())
+                    if not hasattr(task, "__await__") and not asyncio.iscoroutine(task):
+                        # Unit test mock environment where async_create_task returns a MagicMock
+                        task_coro = self.async_verify_physical_state_after_ir()
+                        task_coro.close()
+                except Exception:
+                    pass
+
             return True
 
         # Determine target domain & service call based on blaster_entity_id
@@ -1252,6 +1271,43 @@ class MirAIeDeviceCoordinator:
                     self.state["converti"] = "cv_off"
 
         self._notify_listeners()
+
+    async def async_verify_physical_state_after_ir(self) -> None:
+        """Fast state verification following an IR blast.
+
+        Uses ~20ms Local UDP query probe if the device supports UDP,
+        falling back to Cloud MQTT status polling for non-UDP ACs.
+        """
+        # Wait a brief moment (500ms) for the physical AC microcontroller to process the IR burst
+        await asyncio.sleep(0.5)
+
+        device = getattr(self, "device", None)
+        if device and getattr(device, "supports_local_udp", False) and getattr(device, "udp_transport", None):
+            try:
+                LOGGER.debug("Device %s: Verifying IR blast state via ~20ms Local UDP query", self.device_id)
+                res = await device.send_udp_command({"ps": "query"})
+                LOGGER.debug("Device %s: Local UDP state confirmation received: %s", self.device_id, res)
+                # Reconcile readback against desired state before clearing provisional
+                if isinstance(res, dict):
+                    # If power was requested, check it
+                    desired_power = self.state.get("power")
+                    reported_power = res.get("ps")
+                    if desired_power and reported_power and desired_power != reported_power:
+                        LOGGER.warning("Device %s: Post-IR UDP state mismatch (desired %s, reported %s)", self.device_id, desired_power, reported_power)
+                        return
+                self.state["provisional"] = False
+                self._notify_listeners()
+                return
+            except Exception as udp_err:
+                LOGGER.debug("Device %s: Local UDP post-IR verification failed: %s", self.device_id, udp_err)
+
+        # Fallback to Cloud MQTT refresh if cloud connected and device has Wi-Fi
+        if device and getattr(self, "has_wifi", False) and getattr(device, "broker", None):
+            try:
+                LOGGER.debug("Device %s: Verifying IR blast state via Cloud MQTT refresh", self.device_id)
+                await device.refresh()
+            except Exception as cloud_err:
+                LOGGER.debug("Device %s: Cloud post-IR verification failed: %s", self.device_id, cloud_err)
 
     @callback
     def async_unload(self) -> None:

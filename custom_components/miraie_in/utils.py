@@ -25,7 +25,69 @@ def is_ir_only_entry(entry: Any) -> bool:
         return True
     if entry_data.get("is_ir_only", False):
         return True
+    if entry_data.get("setup_mode") == "local_udp" or entry_data.get("setup_mode") == "ir":
+        return True
     return not entry_data.get("username")
+
+
+async def async_benchmark_transports(
+    device_id: str,
+    ip_address: str | None = None,
+    key: str | None = None,
+    iv: str | None = None,
+    coordinator: Any | None = None,
+) -> dict[str, Any]:
+    """Benchmark round-trip latencies for Local UDP and Cloud MQTT."""
+    import time
+    from miraie_ac.transport.udp import LocalUdpTransportManager
+
+    results: dict[str, Any] = {
+        "device_id": device_id,
+        "local_udp": {"available": False, "latency_ms": None},
+        "cloud_mqtt": {"available": False, "latency_ms": None},
+    }
+
+    # 1. Test Local UDP Ping
+    if ip_address and key and iv:
+        transport = LocalUdpTransportManager.get_instance()
+        was_running = transport.is_running
+        if not was_running:
+            await transport.start()
+        try:
+            transport.register_device(
+                device_id=device_id,
+                mac="00:00:00:00:00:00",
+                key=key,
+                iv=iv,
+                ip_address=ip_address,
+            )
+            t_start = time.perf_counter()
+            # Send non-mutating query probe
+            await transport.send_command(device_id, {"ps": "query"}, timeout=2.0)
+            elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
+            results["local_udp"] = {"available": True, "latency_ms": elapsed_ms}
+        except Exception as exc:
+            LOGGER.debug("Local UDP benchmark failed for %s: %s", device_id, exc)
+            results["local_udp"] = {"available": False, "latency_ms": None, "error": str(exc)}
+        finally:
+            if not was_running:
+                await transport.stop()
+
+    # 2. Test Cloud MQTT Latency via Coordinator/Hub
+    if coordinator and getattr(coordinator, "device", None) and getattr(coordinator.device, "broker", None):
+        broker = coordinator.device.broker
+        if getattr(broker, "is_connected", False):
+            t_start = time.perf_counter()
+            try:
+                # Query device status
+                await coordinator.device.refresh()
+                elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
+                results["cloud_mqtt"] = {"available": True, "latency_ms": elapsed_ms}
+            except Exception as exc:
+                LOGGER.debug("Cloud MQTT benchmark failed for %s: %s", device_id, exc)
+                results["cloud_mqtt"] = {"available": False, "latency_ms": None, "error": str(exc)}
+
+    return results
 
 
 def get_last_sunday() -> date:

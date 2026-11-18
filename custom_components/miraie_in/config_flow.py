@@ -67,15 +67,33 @@ def build_login_schema() -> vol.Schema:
     )
 
 
-def build_cloud_devices_schema(default_install_date: str) -> vol.Schema:
+def build_cloud_devices_schema(default_install_date: str, supports_udp: bool = True) -> vol.Schema:
+    backend_options = [
+        selector.SelectOptionDict(value="cloud", label="Cloud MQTT"),
+        selector.SelectOptionDict(value="ir", label="Infrared"),
+    ]
+    if supports_udp:
+        backend_options.insert(0, selector.SelectOptionDict(value="local_udp", label="Local UDP (LAN)"))
+
+    primary_default = "local_udp" if supports_udp else "cloud"
+
     return vol.Schema(
         {
-            vol.Optional(CONF_PRIMARY_BACKEND, default="cloud"): selector.SelectSelector(
+            vol.Optional(CONF_PRIMARY_BACKEND, default=primary_default): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=[
-                        selector.SelectOptionDict(value="cloud", label="Cloud"),
-                        selector.SelectOptionDict(value="ir", label="Infrared"),
-                    ],
+                    options=backend_options,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional("secondary_backend"): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=backend_options,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            ),
+            vol.Optional("tertiary_backend"): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=backend_options,
                     mode=selector.SelectSelectorMode.DROPDOWN,
                 )
             ),
@@ -200,6 +218,10 @@ async def validate_input(
                             dt = details_map.get(rd["id"], {})
                             if dt:
                                 rd["model_code"] = dt.get("modelNumber") or dt.get("modelName") or rd["model_code"]
+                                rd["udp_control_key"] = dt.get("udpControlKey")
+                                rd["udp_control_iv"] = dt.get("udpControlIV")
+                                rd["mac_address"] = dt.get("macAddress")
+                                rd["ip_address"] = dt.get("ip") or dt.get("ipAddress")
 
                             if is_ac_device(rd.get("raw_dev"), dt):
                                 rd.pop("raw_dev", None)
@@ -344,11 +366,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         dev_model = current_dev.get("model_code", "")
         model_display = f"Model: **{dev_model}**" if dev_model else "Model: Auto-detecting via Cloud"
         default_install = six_months_ago(date.today()).isoformat()
+        has_udp = bool(current_dev.get("udp_control_key") and current_dev.get("udp_control_iv"))
 
         if user_input is None:
             return self.async_show_form(
                 step_id="cloud_devices",
-                data_schema=build_cloud_devices_schema(default_install),
+                data_schema=build_cloud_devices_schema(default_install, supports_udp=has_udp),
                 description_placeholders={
                     "device_name": dev_name,
                     "model_display": model_display,
@@ -372,7 +395,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="cloud_devices",
                 data_schema=build_cloud_devices_schema(
-                    user_input.get(CONF_INSTALL_DATE, default_install)
+                    user_input.get(CONF_INSTALL_DATE, default_install),
+                    supports_udp=has_udp,
                 ),
                 description_placeholders={
                     "device_name": dev_name,
@@ -413,7 +437,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(
                 step_id="cloud_devices",
                 data_schema=build_cloud_devices_schema(
-                    user_input.get(CONF_INSTALL_DATE, default_install)
+                    user_input.get(CONF_INSTALL_DATE, default_install),
+                    supports_udp=has_udp,
                 ),
                 description_placeholders={
                     "device_name": dev_name,
@@ -429,6 +454,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_HYBRID_SUBMODE: submode_val,
             "model_code": dev_model,
         }
+        if user_input.get("secondary_backend"):
+            dev_opt["secondary_backend"] = user_input["secondary_backend"]
+        if user_input.get("tertiary_backend"):
+            dev_opt["tertiary_backend"] = user_input["tertiary_backend"]
+
         if blaster_val:
             dev_opt[CONF_BLASTER_ENTITY_ID] = blaster_val
         if mqtt_topic:
@@ -454,6 +484,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "device_name": dev_name,
             "model_code": dev_model,
             "is_ir_only": False,
+            "udp_control_key": current_dev.get("udp_control_key"),
+            "udp_control_iv": current_dev.get("udp_control_iv"),
+            "device_mac": current_dev.get("mac_address"),
+            "device_ip": current_dev.get("ip_address"),
         }
 
         created = getattr(self, "_created_entries", [])

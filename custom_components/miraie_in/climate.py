@@ -175,7 +175,7 @@ class MirAIeClimate(ClimateEntity):
     async def _send_command_via_hybrid(
         self,
         mode: str | None = None,
-        temp: int | None = None,
+        temp: int | float | None = None,
         fan: str | None = None,
         v_vane: str | None = None,
         h_vane: str | None = None,
@@ -183,31 +183,49 @@ class MirAIeClimate(ClimateEntity):
         nanoe: bool | None = None,
         preset: str | None = None,
         cloud_coro=None,
+        udp_cmd_dict: dict | None = None,
     ) -> None:
-        """Route command through Hybrid Coordinator based on active primary_backend and failover rules."""
+        """Route command through Hybrid Coordinator based on decoupled transport priorities.
+
+        Strictly respects Primary -> Secondary -> Tertiary order. If UDP is primary
+        and IR is secondary, Cloud MQTT is never touched upon failure.
+        """
         coord = getattr(self, "coordinator", None)
         hub = getattr(coord, "hub", None) if coord else None
         broker = getattr(hub, "broker", None) if hub else None
         broker_connected = broker.connected.is_set() if (broker and hasattr(broker, "connected")) else True
         is_cloud_offline = (not getattr(getattr(self.device, "status", None), "is_online", True)) or (not broker_connected)
-        use_ir_first = (
-            coord and (
-                getattr(coord, "primary_backend", "cloud") == "ir"
-                or (is_cloud_offline and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None))
-            )
-        )
 
+        primary = getattr(coord, "primary_backend", "cloud") if coord else "cloud"
+        secondary = getattr(coord, "secondary_backend", None) if coord else None
+        tertiary = getattr(coord, "tertiary_backend", None) if coord else None
+
+        # Build candidate priority list (deduplicating while preserving order)
+        order = []
+        for b in [primary, secondary, tertiary]:
+            if b and b not in order:
+                order.append(b)
+
+        # Preserve legacy Cloud fallback for older IR-primary entries without explicit secondary backend
+        if primary == "ir" and not secondary and getattr(coord, "has_wifi", False) and "cloud" not in order:
+            order.append("cloud")
+
+        if not order:
+            order = ["cloud"]
+
+        # Optimistic UI update
         if coord:
+            origin_label = "Local UDP" if primary == "local_udp" else ("IR" if primary == "ir" else "Cloud")
             coord.async_optimistic_update(
                 mode=mode,
-                target_temp=temp,
+                target_temp=int(temp) if temp is not None else None,
                 fan=fan,
                 v_vane=v_vane,
                 h_vane=h_vane,
                 eco=eco,
                 nanoe=nanoe,
                 preset=preset,
-                origin="IR" if use_ir_first else "Cloud",
+                origin=origin_label,
             )
             if hasattr(self, "async_write_ha_state"):
                 try:
@@ -215,50 +233,108 @@ class MirAIeClimate(ClimateEntity):
                 except Exception:
                     pass
 
-        if use_ir_first and coord:
-            success = await coord.async_dispatch_ir_command(
+        async def _try_udp() -> bool:
+            if not getattr(self.device, "supports_local_udp", False) or not getattr(self.device, "udp_transport", None):
+                return False
+            cmd = dict(udp_cmd_dict) if udp_cmd_dict else {}
+            if not cmd:
+                if mode is not None:
+                    cmd["ps"] = "off" if mode == "off" else "on"
+                    if mode != "off":
+                        cmd["acmd"] = mode
+                if temp is not None:
+                    cmd["actmp"] = str(int(temp) if float(temp).is_integer() else temp)
+                if fan is not None:
+                    cmd["acfs"] = fan
+                if v_vane is not None:
+                    cmd["acvs"] = 0 if str(v_vane).lower() in ("v0", "auto") else int(str(v_vane).replace("V", ""))
+                if h_vane is not None:
+                    cmd["achs"] = 0 if str(h_vane).lower() in ("h0", "auto") else int(str(h_vane).replace("H", ""))
+                if preset is not None:
+                    p = str(preset).lower()
+                    if p in ("eco",):
+                        cmd.update({"acem": "on", "acpm": "off", "acec": "off"})
+                    elif p in ("powerful", "boost"):
+                        cmd.update({"acpm": "on", "acem": "off", "acec": "off"})
+                    elif p in ("clean",):
+                        cmd.update({"acec": "on", "acpm": "off", "acem": "off"})
+                    elif p.startswith("converti_") or p.startswith("cv_"):
+                        try:
+                            c_val = int(p.split("_")[1])
+                            cmd.update({"cnv": c_val, "acem": "off", "acpm": "off"})
+                        except (IndexError, ValueError):
+                            pass
+                    elif p in ("none", "off", "0"):
+                        cmd.update({"acpm": "off", "acem": "off", "acec": "off"})
+                if eco is not None:
+                    cmd.update({"acem": "on" if eco else "off"})
+                if nanoe is not None:
+                    cmd.update({"acng": "on" if nanoe else "off"})
+            try:
+                LOGGER.info("Device %s: Dispatching command via Local UDP: %s", self.device.id, cmd)
+                res = await self.device.send_udp_command(cmd)
+                LOGGER.debug("Device %s: Local UDP command succeeded: %s", self.device.id, res)
+                return True
+            except Exception as err:
+                LOGGER.warning("Device %s: Local UDP command failed: %s", self.device.id, err)
+                return False
+
+        async def _try_ir(origin: str) -> bool:
+            if not coord or not getattr(coord, "blaster_entity_id", None):
+                return False
+            LOGGER.info("Device %s: Dispatching command via IR blaster (%s)", self.device.id, origin)
+            return await coord.async_dispatch_ir_command(
                 mode=mode,
-                target_temp=temp,
+                target_temp=int(temp) if temp is not None else None,
                 fan=fan,
                 v_vane=v_vane,
                 h_vane=h_vane,
                 eco=eco,
                 nanoe=nanoe,
                 preset=preset,
-                origin="IR Blaster" if getattr(coord, "primary_backend", "cloud") == "ir" else "IR Failover (Offline)",
+                origin=origin,
             )
-            if success:
-                if cloud_coro and hasattr(cloud_coro, "close"):
-                    try:
-                        cloud_coro.close()
-                    except Exception:
-                        pass
-                return
-            LOGGER.warning("IR command failed for %s, falling back to Cloud", self.device.id)
 
-        if cloud_coro:
-            async def _run_cloud_coro():
-                try:
-                    await cloud_coro
-                except Exception as err:
-                    LOGGER.warning("Cloud command failed for %s: %s", self.device.id, err)
-                    if coord and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None):
-                        LOGGER.info("Auto Failover triggered: Transmitting IR command for %s", self.device.id)
-                        await coord.async_dispatch_ir_command(
-                            mode=mode,
-                            target_temp=temp,
-                            fan=fan,
-                            v_vane=v_vane,
-                            h_vane=h_vane,
-                            eco=eco,
-                            nanoe=nanoe,
-                            origin="IR Failover",
-                        )
+        async def _try_cloud() -> bool:
+            if not cloud_coro or is_cloud_offline:
+                return False
+            try:
+                LOGGER.info("Device %s: Dispatching command via Cloud MQTT", self.device.id)
+                await cloud_coro
+                return True
+            except Exception as err:
+                LOGGER.warning("Device %s: Cloud command failed: %s", self.device.id, err)
+                return False
 
-            if hasattr(self, "hass") and self.hass:
-                self.hass.async_create_task(_run_cloud_coro())
+        # Attempt backends in strictly configured sequence
+        for idx, backend in enumerate(order):
+            is_fallback = (idx > 0)
+            if is_cloud_offline and backend == "ir":
+                origin_name = "IR Failover (Offline)"
+            elif is_fallback and backend == "ir":
+                origin_name = f"IR Failover ({order[idx-1]} failed)"
             else:
-                await _run_cloud_coro()
+                origin_name = "IR Blaster"
+
+            if backend == "local_udp":
+                if await _try_udp():
+                    if coord:
+                        coord.state["last_controlled_by"] = "Local UDP"
+                    return
+            elif backend == "ir":
+                if await _try_ir(origin_name):
+                    return
+            elif backend == "cloud":
+                if await _try_cloud():
+                    if coord:
+                        coord.state["last_controlled_by"] = "Cloud"
+                    return
+                elif getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None) and "ir" not in order[idx+1:]:
+                    # Proactive offline failover to IR if Cloud fails/offline and IR is not explicitly ordered next
+                    if await _try_ir("IR Failover (Offline)"):
+                        return
+
+        LOGGER.error("Device %s: All configured transports failed (%s)", self.device.id, order)
 
     @property
     def name(self) -> str | None:

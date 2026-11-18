@@ -5,6 +5,7 @@ from typing import Any
 from .logger import LOGGER
 
 from miraie_ac import MirAIeBroker, MirAIeHub
+from miraie_ac.transport.udp import LocalUdpTransportManager
 
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigEntry
@@ -469,6 +470,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _cleanup_cross_device_entities(hass, entry, target_dev_id)
 
 
+    # Start Local UDP Transport Singleton if not already running
+    udp_manager = LocalUdpTransportManager.get_instance()
+    if not udp_manager.is_running:
+        try:
+            await udp_manager.start()
+            LOGGER.info("MirAIe Local UDP Transport Manager started on port 5002")
+        except Exception as udp_start_err:
+            LOGGER.warning("Could not start MirAIe Local UDP Transport: %s", udp_start_err)
+
     for device in target_devices:
         dev_opt = devices_opt.get(device.id, {})
         blaster_id = dev_opt.get(CONF_BLASTER_ENTITY_ID) or entry.options.get(CONF_BLASTER_ENTITY_ID) or entry.data.get(CONF_BLASTER_ENTITY_ID)
@@ -476,7 +486,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if mqtt_topic:
             blaster_id = mqtt_topic
         receiver_id = dev_opt.get(CONF_RECEIVER_ENTITY_ID) or entry.options.get(CONF_RECEIVER_ENTITY_ID) or entry.data.get(CONF_RECEIVER_ENTITY_ID)
-        primary = dev_opt.get(CONF_PRIMARY_BACKEND) or entry.options.get(CONF_PRIMARY_BACKEND, "cloud" if not is_ir_only else "ir")
+        primary = dev_opt.get(CONF_PRIMARY_BACKEND) or entry.options.get(CONF_PRIMARY_BACKEND) or entry.data.get(CONF_PRIMARY_BACKEND, "cloud" if not is_ir_only else "ir")
+        secondary = dev_opt.get("secondary_backend") or entry.options.get("secondary_backend") or entry.data.get("secondary_backend")
+        tertiary = dev_opt.get("tertiary_backend") or entry.options.get("tertiary_backend") or entry.data.get("tertiary_backend")
         submode = dev_opt.get(CONF_HYBRID_SUBMODE) or entry.options.get(CONF_HYBRID_SUBMODE, "auto" if not is_ir_only else "manual")
         ir_fmt = dev_opt.get(CONF_IR_FORMAT) or entry.options.get(CONF_IR_FORMAT) or entry.data.get(CONF_IR_FORMAT) or dev_opt.get("working_ir_format") or entry.options.get("working_ir_format") or "auto"
         temp_sensor_id = dev_opt.get("room_temp_sensor") or entry.options.get("room_temp_sensor") or entry.data.get("room_temp_sensor") or dev_opt.get(CONF_ROOM_TEMP_SENSOR) or entry.options.get(CONF_ROOM_TEMP_SENSOR) or entry.data.get(CONF_ROOM_TEMP_SENSOR)
@@ -484,6 +496,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         avail_topic = dev_opt.get(CONF_AVAILABILITY_TOPIC) or entry.options.get(CONF_AVAILABILITY_TOPIC) or entry.data.get(CONF_AVAILABILITY_TOPIC)
 
         model_code = dev_opt.get("model_code") or entry.options.get("model_code") or entry.data.get("model_code") or getattr(getattr(device, "details", None), "model_number", "") or ""
+
+        # Attach UDP Transport to device if supported
+        dt = getattr(device, "details", None)
+        udp_key = getattr(dt, "udp_control_key", None) or entry.data.get("udp_control_key")
+        udp_iv = getattr(dt, "udp_control_iv", None) or entry.data.get("udp_control_iv")
+        dev_ip = getattr(dt, "ip_address", None) or entry.data.get("device_ip")
+
+        if udp_key and udp_iv and dt:
+            dt.udp_control_key = udp_key
+            dt.udp_control_iv = udp_iv
+            if dev_ip:
+                dt.ip_address = dev_ip
+            if hasattr(device, "attach_udp_transport"):
+                device.attach_udp_transport(udp_manager)
 
         coordinator = MirAIeDeviceCoordinator(
             hass=hass,
@@ -497,9 +523,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             availability_entity_id=availability_id,
             availability_topic=avail_topic,
             primary_backend=primary,
+            secondary_backend=secondary,
+            tertiary_backend=tertiary,
             hybrid_submode=submode,
             ir_format=ir_fmt,
             lookup=lookup,
+            device=device,
         )
         coordinator.hub = hub
         model_caps = getattr(device, "model_capabilities", None)
