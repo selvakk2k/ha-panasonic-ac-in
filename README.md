@@ -215,6 +215,7 @@ logger:
 ### Upstream Authors & Contributors
 * Originally designed and written by [@rkzofficial](https://github.com/rkzofficial) and contributors in [`ha-miraie-ac`](https://github.com/rkzofficial/ha-miraie-ac).
 * Upstream feature contributions by [@deCodeIt](https://github.com/deCodeIt) and [@gutpull](https://github.com/gutpull).
+* **Local UDP Protocol Research**: [@dtechterminal](https://github.com/dtechterminal) ([ha-panasonic-miraie-local](https://github.com/dtechterminal/ha-panasonic-miraie-local)) for reverse engineering the local AES-256-CBC UDP protocol.
 
 ### Fork Maintainers & Contributors
 * **Lead Architecture & Hardware Validation**: [@selvakk2k](https://github.com/selvakk2k) — physical hardware captures and domain requirements.
