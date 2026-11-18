@@ -1,0 +1,87 @@
+name: Triage & Auto-Assign
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Triage Issue or Pull Request
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const targetUser = 'selvakk2k';
+
+            if (context.eventName === 'issues') {
+              const issueNumber = context.payload.issue.number;
+              const issueAuthor = context.payload.issue.user.login;
+
+              // Assign owner to trigger instant mobile push notification
+              await github.rest.issues.addAssignees({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                assignees: [targetUser]
+              });
+
+              // Tag external issues for visibility
+              if (issueAuthor !== targetUser) {
+                try {
+                  await github.rest.issues.addLabels({
+                    owner,
+                    repo,
+                    issue_number: issueNumber,
+                    labels: ['needs-triage']
+                  });
+                } catch (err) {
+                  core.info(`Note: 'needs-triage' label not present or could not be added: ${err.message}`);
+                }
+              }
+            } else if (context.eventName === 'pull_request_target') {
+              const prNumber = context.payload.pull_request.number;
+              const prAuthor = context.payload.pull_request.user.login;
+
+              // Assign owner to trigger instant notification
+              await github.rest.issues.addAssignees({
+                owner,
+                repo,
+                issue_number: prNumber,
+                assignees: [targetUser]
+              });
+
+              // Request review if opened by an external contributor
+              if (prAuthor !== targetUser) {
+                try {
+                  await github.rest.pulls.requestReviewers({
+                    owner,
+                    repo,
+                    pull_number: prNumber,
+                    reviewers: [targetUser]
+                  });
+                } catch (err) {
+                  core.info(`Could not request review: ${err.message}`);
+                }
+              }
+
+              // Automatically summon CodeRabbit review on all PRs
+              try {
+                await github.rest.issues.createComment({
+                  owner,
+                  repo,
+                  issue_number: prNumber,
+                  body: '@coderabbitai review'
+                });
+              } catch (err) {
+                core.info(`Could not summon CodeRabbit: ${err.message}`);
+              }
+            }
