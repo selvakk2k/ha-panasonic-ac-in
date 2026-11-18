@@ -4,11 +4,13 @@
   <img src="custom_components/miraie_in/brand/logo.png" alt="Panasonic AC India Logo" width="380">
 </p>
 
-[![Marketplace Custom](https://img.shields.io/badge/Marketplace-Custom-41BDF5.svg?style=flat-square)](https://www.home-assistant.io/integrations/marketplace/)
-[![Stable](https://img.shields.io/github/v/release/selvakk2k/ha-panasonic-ac-in?label=Stable&style=flat-square)](https://github.com/selvakk2k/ha-panasonic-ac-in/releases/latest)
-[![Beta](https://img.shields.io/github/v/release/selvakk2k/ha-panasonic-ac-in?include_prereleases&label=Beta&color=orange&style=flat-square)](https://github.com/selvakk2k/ha-panasonic-ac-in/releases)
-[![AI-Assisted](https://img.shields.io/badge/AI%20Assisted-Antigravity%20%7C%20Claude-blueviolet?style=flat-square&logo=google)](https://github.com/selvakk2k)
-[![AI Attribution](https://img.shields.io/badge/AI%20Attribution-AIA%20PAI%20Nc%20Hin-orange?style=flat-square)](https://aiattribution.github.io/interpret-attribution)
+<p align="center">
+  <a href="https://www.home-assistant.io/integrations/marketplace/"><img src="https://img.shields.io/badge/Marketplace-Custom-41BDF5.svg?style=flat-square" alt="Marketplace Custom"></a>
+  <a href="https://github.com/selvakk2k/ha-panasonic-ac-in/releases/latest"><img src="https://img.shields.io/github/v/release/selvakk2k/ha-panasonic-ac-in?label=Stable&style=flat-square" alt="Stable"></a>
+  <a href="https://github.com/selvakk2k/ha-panasonic-ac-in/releases"><img src="https://img.shields.io/github/v/release/selvakk2k/ha-panasonic-ac-in?include_prereleases&label=Beta&color=orange&style=flat-square" alt="Beta"></a>
+  <a href="https://github.com/selvakk2k"><img src="https://img.shields.io/badge/AI%20Assisted-Antigravity%20%7C%20Claude%20%7C%20CodeRabbit-blueviolet?style=flat-square" alt="AI-Assisted"></a>
+  <a href="https://aiattribution.github.io/interpret-attribution"><img src="https://img.shields.io/badge/AI%20Attribution-AIA%20PAI%20Nc%20Hin-orange?style=flat-square" alt="AI Attribution"></a>
+</p>
 
 A comprehensive Home Assistant custom integration for Panasonic Air Conditioners operating on the Indian-market MirAIe IoT platform. Features a dual-transport Hybrid architecture combining real-time Cloud MQTT with zero-latency Local IR blaster failover, long-term historical energy statistics import, and convertible capacity limits.
 
