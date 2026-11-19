@@ -405,6 +405,13 @@ def setup_ha_stubs():
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
             self.__dict__.update(kwargs)
+    class TextSelectorType(Enum):
+        TEXT = "text"
+        PASSWORD = "password"
+        EMAIL = "email"
+        URL = "url"
+        TEL = "tel"
+        NUMBER = "number"
 
     selector_mod.SelectOptionDict = SelectOptionDict
     selector_mod.SelectSelector = SelectSelector
@@ -416,6 +423,7 @@ def setup_ha_stubs():
     selector_mod.DateSelector = DateSelector
     selector_mod.TextSelector = TextSelector
     selector_mod.TextSelectorConfig = TextSelectorConfig
+    selector_mod.TextSelectorType = TextSelectorType
 
     # MQTT helper stubs
     import homeassistant.components.mqtt as mqtt_mod
@@ -469,6 +477,7 @@ def setup_ha_stubs():
         CRITICAL = "critical"
     homeassistant.helpers.issue_registry.IssueSeverity = IssueSeverity
     homeassistant.helpers.issue_registry.async_create_issue = lambda *args, **kwargs: None
+    homeassistant.helpers.issue_registry.async_delete_issue = lambda *args, **kwargs: None
 
     # Infrared helper stubs
     ir_mod = types.ModuleType("homeassistant.components.infrared")
@@ -533,6 +542,13 @@ def setup_ha_stubs():
     select_mod.SelectEntity = SelectEntity
     sys.modules["homeassistant.components.select"] = select_mod
     setattr(homeassistant.components, "select", select_mod)
+
+    # persistent_notification stub
+    pn_mod = types.ModuleType("homeassistant.components.persistent_notification")
+    pn_mod.async_create = lambda *args, **kwargs: None
+    pn_mod.async_dismiss = lambda *args, **kwargs: None
+    sys.modules["homeassistant.components.persistent_notification"] = pn_mod
+    setattr(homeassistant.components, "persistent_notification", pn_mod)
 
     # restore_state helper stub
     import homeassistant.helpers.restore_state

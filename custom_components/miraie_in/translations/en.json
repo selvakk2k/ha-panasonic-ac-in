@@ -417,8 +417,8 @@
       "description": "Panasonic AC India introduces independent per-device entries and local IR blaster support. Auto-migration could not split your legacy account entry automatically. Please delete the old entry under Settings -> Devices & Services -> Panasonic AC India and re-add your account via Add Integration. All your existing entity names, automations, and dashboards will remain unchanged."
     },
     "migration_successful": {
-      "title": "Migrated to Panasonic AC India — Device Settings Available",
-      "description": "Your Panasonic AC integration has been successfully updated!\n\nEach AC unit is now managed as an independent device entry with hybrid Cloud + IR support.\n\nTo set up local IR control or hybrid failover for your AC unit:\n1. Go to **Settings -> Devices & Services -> Panasonic AC India**.\n2. Click the **Configure (Settings Cog)** button next to your AC device.\n3. Configure your **IR Blaster**, **IR Receiver**, or control preferences."
+      "title": "Panasonic AC India — Local UDP Available",
+      "description": "Your Panasonic AC integration has been upgraded to support direct **Local UDP (Wi-Fi) control** alongside MirAIe Cloud and IR.\n\nTo enable local Wi-Fi control:\n1. Go to **Settings -> Devices & Services -> Panasonic AC India**.\n2. Click the **Configure** button next to your AC device.\n3. Enter your AC unit's local IP address (UDP encryption keys have already been retrieved from your cloud account)."
     }
   }
 }

@@ -47,7 +47,18 @@ async def async_setup_entry(
 
     for device in devices:
         coordinator = coordinators.get(device.id)
-        entities.append(MirAIeDisplayModeSelect(device, coordinator))
+        supports_night = getattr(device, "supports_night_display", False)
+        if not supports_night and coordinator and hasattr(coordinator, "capabilities"):
+            supports_night = bool(coordinator.capabilities.get("supports_night_display", False))
+
+        if supports_night:
+            entities.append(MirAIeDisplayModeSelect(device, coordinator))
+        else:
+            disp_select_unq_id = f"{device.id}_display_mode"
+            disp_select_entity_id = ent_reg.async_get_entity_id("select", DOMAIN, disp_select_unq_id)
+            if disp_select_entity_id:
+                ent_reg.async_remove(disp_select_entity_id)
+                LOGGER.info("Cleaned up unsupported display mode select %s for device %s", disp_select_entity_id, device.id)
 
     async_add_entities(entities)
 

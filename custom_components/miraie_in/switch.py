@@ -58,7 +58,21 @@ async def async_setup_entry(
 
     for device in devices:
         coordinator = coordinators.get(device.id)
-        entities.append(MirAIeDisplaySwitch(device, coordinator))
+
+        # Display Switch gating & orphan cleanup
+        # If the device supports Night display, display control is handled via select.panasonic_ac_display_mode
+        supports_night = getattr(device, "supports_night_display", False)
+        if not supports_night and coordinator and hasattr(coordinator, "capabilities"):
+            supports_night = bool(coordinator.capabilities.get("supports_night_display", False))
+
+        if not supports_night:
+            entities.append(MirAIeDisplaySwitch(device, coordinator))
+        else:
+            disp_unq_id = f"{device.id}_display"
+            disp_entity_id = ent_reg.async_get_entity_id("switch", DOMAIN, disp_unq_id)
+            if disp_entity_id:
+                ent_reg.async_remove(disp_entity_id)
+                LOGGER.info("Cleaned up redundant display switch %s for device %s (handled via select.display_mode)", disp_entity_id, device.id)
 
         # Buzzer Switch gating & orphan cleanup
         has_buzzer = False

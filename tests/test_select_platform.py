@@ -1,7 +1,7 @@
 """Unit tests for Select platform in ha-miraie-ac."""
 
 import unittest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from tests.ha_stub import MockHass, MockEntry
 from custom_components.miraie_in.select import (
@@ -151,6 +151,26 @@ class TestSelectPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(added_entities), 1)
         self.assertIsInstance(added_entities[0], MirAIeDisplayModeSelect)
         self.assertEqual(added_entities[0].unique_id, f"{self.device.id}_display_mode")
+
+    async def test_async_setup_entry_skips_and_cleans_up_when_no_night_support(self):
+        """Test async_setup_entry omits select and cleans up orphaned entity when night display is unsupported."""
+        self.device.supports_night_display = False
+        self.coordinator.capabilities = {"supports_night_display": False}
+        mock_hub = MagicMock()
+        mock_hub.home = MagicMock(devices=[self.device])
+        mock_hub.devices = [self.device]
+        mock_hub.coordinators = {self.device.id: self.coordinator}
+        self.mock_entry.runtime_data = mock_hub
+
+        self.hass.entity_registry = MagicMock()
+        self.hass.entity_registry.async_get_entity_id.return_value = "select.living_room_ac_display_mode"
+
+        added_entities = []
+        with patch("homeassistant.helpers.entity_registry.async_get", return_value=self.hass.entity_registry):
+            await async_setup_entry(self.hass, self.mock_entry, lambda ents: added_entities.extend(ents))
+
+        self.assertEqual(len(added_entities), 0)
+        self.hass.entity_registry.async_remove.assert_called_once_with("select.living_room_ac_display_mode")
 
     async def test_ir_display_toggle_with_raw_boolean_prev_display(self):
         """Test IR display toggle when coordinator holds raw boolean display state."""

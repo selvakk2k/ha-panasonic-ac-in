@@ -21,11 +21,54 @@ class TestConfigEntryMigration(unittest.IsolatedAsyncioTestCase):
             "primary_backend": "cloud",
         }
 
-        res = await async_migrate_entry(hass, mock_entry)
-        self.assertTrue(res)
-        hass.config_entries.async_update_entry.assert_called_with(mock_entry, version=2)
+        with patch("homeassistant.components.persistent_notification.async_create") as mock_notify:
+            res = await async_migrate_entry(hass, mock_entry)
+            self.assertTrue(res)
+            hass.config_entries.async_update_entry.assert_called_with(mock_entry, version=3)
+            # Cloud entry without IP gets notification
+            mock_notify.assert_called_once()
+            self.assertEqual(mock_notify.call_args[1]["notification_id"], "panasonic_ac_udp_available_test_entry_123")
 
-    async def test_migrate_v1_ir_entry(self):
+    async def test_migrate_v2_entry_already_configured_is_silent(self):
+        from custom_components.miraie_in import async_migrate_entry
+
+        hass = MagicMock()
+        mock_entry = MagicMock()
+        mock_entry.version = 2
+        mock_entry.entry_id = "test_entry_v2"
+        mock_entry.data = {"username": "selvakk@gmail.com", "password": "secret_password", "device_name": "Living Room AC"}
+        mock_entry.options = {
+            "primary_backend": "local_udp",
+            "device_ip": "192.168.1.100",
+            "udp_control_key": "aabbccddeeff11223344",
+        }
+
+        with patch("homeassistant.components.persistent_notification.async_create") as mock_notify:
+            res = await async_migrate_entry(hass, mock_entry)
+            self.assertTrue(res)
+            hass.config_entries.async_update_entry.assert_called_with(mock_entry, version=3)
+            # Already configured: no notification
+            mock_notify.assert_not_called()
+
+    async def test_migrate_v2_entry_missing_ip_notifies(self):
+        from custom_components.miraie_in import async_migrate_entry
+
+        hass = MagicMock()
+        mock_entry = MagicMock()
+        mock_entry.version = 2
+        mock_entry.entry_id = "test_entry_v2_needs_ip"
+        mock_entry.data = {"username": "selvakk@gmail.com", "password": "secret_password", "device_name": "Bedroom AC"}
+        mock_entry.options = {"primary_backend": "cloud"}
+
+        with patch("homeassistant.components.persistent_notification.async_create") as mock_notify:
+            res = await async_migrate_entry(hass, mock_entry)
+            self.assertTrue(res)
+            hass.config_entries.async_update_entry.assert_called_with(mock_entry, version=3)
+            mock_notify.assert_called_once()
+            self.assertEqual(mock_notify.call_args[1]["notification_id"], "panasonic_ac_udp_available_test_entry_v2_needs_ip")
+            self.assertIn("Bedroom AC", mock_notify.call_args[0][1])
+
+    async def test_migrate_v1_ir_entry_is_silent(self):
         from custom_components.miraie_in import async_migrate_entry
 
         hass = MagicMock()
@@ -38,9 +81,50 @@ class TestConfigEntryMigration(unittest.IsolatedAsyncioTestCase):
             "primary_backend": "ir",
         }
 
-        res = await async_migrate_entry(hass, mock_entry)
-        self.assertTrue(res)
-        hass.config_entries.async_update_entry.assert_called_with(mock_entry, version=2)
+        with patch("homeassistant.components.persistent_notification.async_create") as mock_notify:
+            res = await async_migrate_entry(hass, mock_entry)
+            self.assertTrue(res)
+            hass.config_entries.async_update_entry.assert_called_with(mock_entry, version=3)
+            # Pure IR entry: no UDP notification
+            mock_notify.assert_not_called()
+
+    async def test_multi_device_migration_isolation(self):
+        """Test migrating multiple devices: only devices missing IP receive scoped notifications."""
+        from custom_components.miraie_in import async_migrate_entry
+
+        hass = MagicMock()
+
+        # Device 1: Cloud entry, missing IP -> should notify
+        dev1 = MagicMock()
+        dev1.version = 2
+        dev1.entry_id = "entry_bedroom"
+        dev1.data = {"username": "user@test.com", "device_name": "Bedroom AC"}
+        dev1.options = {"primary_backend": "cloud"}
+
+        # Device 2: Cloud entry with UDP configured -> should be silent
+        dev2 = MagicMock()
+        dev2.version = 2
+        dev2.entry_id = "entry_living"
+        dev2.data = {"username": "user@test.com", "device_name": "Living AC"}
+        dev2.options = {"device_ip": "192.168.1.55", "udp_control_key": "key123"}
+
+        # Device 3: IR-only entry -> should be silent
+        dev3 = MagicMock()
+        dev3.version = 2
+        dev3.entry_id = "entry_kitchen_ir"
+        dev3.data = {"is_ir_only": True, "device_name": "Kitchen AC"}
+        dev3.options = {"primary_backend": "ir"}
+
+        with patch("homeassistant.components.persistent_notification.async_create") as mock_notify:
+            await async_migrate_entry(hass, dev1)
+            await async_migrate_entry(hass, dev2)
+            await async_migrate_entry(hass, dev3)
+
+            # Exactly one notification created (for dev1 only)
+            self.assertEqual(mock_notify.call_count, 1)
+            call_kwargs = mock_notify.call_args[1]
+            self.assertEqual(call_kwargs["notification_id"], "panasonic_ac_udp_available_entry_bedroom")
+            self.assertIn("Bedroom AC", mock_notify.call_args[0][1])
 
     async def test_auto_split_preserves_install_date_and_options(self):
         from custom_components.miraie_in import async_setup_entry
@@ -271,6 +355,49 @@ class TestConfigEntryMigration(unittest.IsolatedAsyncioTestCase):
         finally:
             registry.entities = orig_entities
             registry.async_update_entity = orig_update_entity
+
+
+    async def test_options_flow_multi_device_udp_isolation(self):
+        """Test Options Flow device settings preserves other devices when updating UDP."""
+        from custom_components.miraie_in.config_flow import OptionsFlowHandler
+
+        hass = MagicMock()
+        mock_entry = MagicMock()
+        mock_entry.entry_id = "test_entry_multi"
+        mock_entry.data = {"username": "user@test.com", "device_id": "dev_1", "device_name": "Living AC"}
+        mock_entry.options = {
+            "devices": {
+                "dev_1": {"device_ip": "192.168.1.10", "primary_backend": "cloud"},
+                "dev_2": {"device_ip": "192.168.1.20", "primary_backend": "local_udp", "udp_control_key": "secret2"},
+            }
+        }
+
+        flow = OptionsFlowHandler(mock_entry)
+        flow.hass = hass
+
+        from datetime import date, timedelta
+        user_input = {
+            "install_date": (date.today() - timedelta(days=60)).isoformat(),
+            "device_ip": "192.168.1.15",
+            "udp_control_key": "aabbccddeeff00112233aabbccddeeff00112233aabbccddeeff00112233aabbccdd",
+            "udp_control_iv": "aabbccddeeff00112233aabbccddeeff",
+            "primary_backend": "local_udp",
+            "secondary_backend": "none",
+            "hybrid_submode": "auto",
+        }
+
+        result = await flow.async_step_device_settings(user_input)
+        self.assertEqual(result["type"], "create_entry")
+        new_opts = result["data"]
+
+        # dev_1 updated
+        self.assertEqual(new_opts["devices"]["dev_1"]["device_ip"], "192.168.1.15")
+        self.assertEqual(new_opts["devices"]["dev_1"]["primary_backend"], "local_udp")
+
+        # dev_2 completely preserved without modification or pollution
+        self.assertEqual(new_opts["devices"]["dev_2"]["device_ip"], "192.168.1.20")
+        self.assertEqual(new_opts["devices"]["dev_2"]["primary_backend"], "local_udp")
+        self.assertEqual(new_opts["devices"]["dev_2"]["udp_control_key"], "secret2")
 
 
 if __name__ == "__main__":

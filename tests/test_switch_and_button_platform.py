@@ -1,7 +1,7 @@
 """Unit tests for Switch and Button platforms in ha-miraie-ac."""
 
 import unittest
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from tests.ha_stub import MockHass, MockEntry
 from custom_components.miraie_in.switch import (
@@ -44,6 +44,7 @@ class TestSwitchAndButtonPlatform(unittest.IsolatedAsyncioTestCase):
         self.mock_device.id = "dev_sb_test"
         self.mock_device.friendly_name = "Dining Room AC"
         self.mock_device.supports_local_udp = False
+        self.mock_device.supports_night_display = False
         self.mock_device.udp_transport = None
         self.mock_device.set_display_mode = AsyncMock()
         self.mock_device.set_nanoe = AsyncMock()
@@ -243,6 +244,35 @@ class TestSwitchAndButtonPlatform(unittest.IsolatedAsyncioTestCase):
             async_attach_blaster_listener(mock_entity, coord_blaster)
             mock_debug.assert_called_once()
             self.assertIn("Could not track blaster state change", mock_debug.call_args[0][0])
+
+    async def test_switch_async_setup_entry_display_switch_gating(self):
+        """Test display switch is created when supports_night_display is False and cleaned up when True."""
+        from custom_components.miraie_in.switch import async_setup_entry, MirAIeDisplaySwitch
+
+        # Case 1: supports_night_display is False -> MirAIeDisplaySwitch created
+        self.mock_device.supports_night_display = False
+        self.mock_hub.home.devices = [self.mock_device]
+        self.mock_hub.coordinators = {self.mock_device.id: self.coordinator}
+        self.mock_entry.runtime_data = self.mock_hub
+
+        added = []
+        await async_setup_entry(self.hass, self.mock_entry, lambda ents: added.extend(ents))
+        display_switches = [e for e in added if isinstance(e, MirAIeDisplaySwitch)]
+        self.assertEqual(len(display_switches), 1)
+
+        # Case 2: supports_night_display is True -> MirAIeDisplaySwitch omitted and cleaned up
+        self.mock_device.supports_night_display = True
+        self.coordinator.capabilities = {"supports_night_display": True}
+        self.hass.entity_registry = MagicMock()
+        self.hass.entity_registry.async_get_entity_id.side_effect = lambda domain, plat, unq_id: "switch.dining_room_ac_display" if unq_id.endswith("_display") else None
+
+        added_night = []
+        with patch("homeassistant.helpers.entity_registry.async_get", return_value=self.hass.entity_registry):
+            await async_setup_entry(self.hass, self.mock_entry, lambda ents: added_night.extend(ents))
+
+        display_switches_night = [e for e in added_night if isinstance(e, MirAIeDisplaySwitch)]
+        self.assertEqual(len(display_switches_night), 0)
+        self.hass.entity_registry.async_remove.assert_called_once_with("switch.dining_room_ac_display")
 
     async def test_button_async_setup_entry_with_mappingproxy(self):
         """Verify button async_setup_entry creates buttons when entry.data is MappingProxyType."""

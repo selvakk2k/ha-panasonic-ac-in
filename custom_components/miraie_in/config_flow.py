@@ -408,7 +408,7 @@ def _get_existing_device_identifiers(entries: list[config_entries.ConfigEntry]) 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for mirAIe."""
 
-    VERSION = 2
+    VERSION = 3
 
     async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
         """Handle import flow for automatic legacy v1.x per-device entry migration and multi-device setup."""
@@ -1758,9 +1758,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             or entry_data.get(CONF_UDP_CONTROL_IV)
             or getattr(dt, "udp_control_iv", None)
         )
-        has_udp = (setup_mode != SETUP_MODE_CLOUD) and bool(current_udp_key and current_udp_iv)
+        is_ir_only = bool(entry_data.get("is_ir_only", False))
+        supports_udp = not is_ir_only
+        has_udp = supports_udp and bool(current_udp_key and current_udp_iv)
         has_cloud = bool(
-            (entry_data.get("username") and not entry_data.get("is_ir_only"))
+            (entry_data.get("username") and not is_ir_only)
             or current_backend == BACKEND_CLOUD
             or current_secondary == BACKEND_CLOUD
         )
@@ -1788,7 +1790,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 except Exception as err:
                     _LOGGER.debug("Speed test during options flow failed: %s", err)
 
-            schema = self._build_device_settings_schema(supports_udp=has_udp, has_cloud=has_cloud, default_controller=current_ctrl)
+            schema = self._build_device_settings_schema(supports_udp=supports_udp, has_cloud=has_cloud, default_controller=current_ctrl)
             suggested = {
                 CONF_INSTALL_DATE: current_install,
                 CONF_MQTT_TOPIC: current_mqtt,
@@ -1802,7 +1804,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_SECONDARY_BACKEND: current_secondary,
                 CONF_HYBRID_SUBMODE: current_submode,
             }
-            if has_udp:
+            if supports_udp:
                 if current_ip:
                     suggested[CONF_DEVICE_IP] = current_ip
                 if current_mac:
@@ -1833,7 +1835,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 raise InvalidInstallDate
         except InvalidInstallDate:
             errors[CONF_INSTALL_DATE] = "invalid_install_date"
-            schema = self._build_device_settings_schema(supports_udp=has_udp, has_cloud=has_cloud)
+            schema = self._build_device_settings_schema(supports_udp=supports_udp, has_cloud=has_cloud)
             if hasattr(self, "add_suggested_values_to_schema"):
                 schema = self.add_suggested_values_to_schema(schema, user_input)
             return self.async_show_form(
@@ -1915,7 +1917,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 errors[CONF_UDP_CONTROL_IV] = "invalid_iv"
 
         if errors:
-            schema = self._build_device_settings_schema(supports_udp=has_udp, has_cloud=has_cloud)
+            schema = self._build_device_settings_schema(supports_udp=supports_udp, has_cloud=has_cloud)
             suggested = {
                 CONF_INSTALL_DATE: user_input.get(CONF_INSTALL_DATE, default_install),
                 CONF_MQTT_TOPIC: mqtt_topic,
@@ -1974,22 +1976,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         is_multi_device = len(current_options.get("devices", {})) > 1
         if not is_multi_device:
-            if has_udp and user_input.get(CONF_DEVICE_IP):
+            if supports_udp and user_input.get(CONF_DEVICE_IP):
                 ip_val = str(user_input.get(CONF_DEVICE_IP)).strip()
                 new_options[CONF_DEVICE_IP] = ip_val
 
-            if has_udp and user_input.get(CONF_DEVICE_MAC):
+            if supports_udp and user_input.get(CONF_DEVICE_MAC):
                 clean_mac = str(user_input.get(CONF_DEVICE_MAC)).strip().replace(":", "").replace("-", "").upper()
                 new_options[CONF_DEVICE_MAC] = clean_mac
 
-            if has_udp and user_input.get(CONF_CONTROLLER_ID):
+            if supports_udp and user_input.get(CONF_CONTROLLER_ID):
                 ctrl_val = str(user_input.get(CONF_CONTROLLER_ID)).strip() or DEFAULT_CONTROLLER_ID
                 new_options[CONF_CONTROLLER_ID] = ctrl_val
 
-            if has_udp and user_input.get(CONF_UDP_CONTROL_KEY):
+            if supports_udp and user_input.get(CONF_UDP_CONTROL_KEY):
                 new_options[CONF_UDP_CONTROL_KEY] = str(user_input.get(CONF_UDP_CONTROL_KEY)).strip()
 
-            if has_udp and user_input.get(CONF_UDP_CONTROL_IV):
+            if supports_udp and user_input.get(CONF_UDP_CONTROL_IV):
                 new_options[CONF_UDP_CONTROL_IV] = str(user_input.get(CONF_UDP_CONTROL_IV)).strip()
 
         if target_id:
@@ -2016,15 +2018,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             if "tertiary_backend" in target_opt:
                 dev_entry["tertiary_backend"] = target_opt["tertiary_backend"]
             dev_entry[CONF_HYBRID_SUBMODE] = submode_val
-            if has_udp and user_input.get(CONF_DEVICE_IP):
+            if supports_udp and user_input.get(CONF_DEVICE_IP):
                 dev_entry[CONF_DEVICE_IP] = str(user_input.get(CONF_DEVICE_IP)).strip()
-            if has_udp and user_input.get(CONF_DEVICE_MAC):
+            if supports_udp and user_input.get(CONF_DEVICE_MAC):
                 dev_entry[CONF_DEVICE_MAC] = str(user_input.get(CONF_DEVICE_MAC)).strip().replace(":", "").replace("-", "").upper()
-            if has_udp and user_input.get(CONF_CONTROLLER_ID):
+            if supports_udp and user_input.get(CONF_CONTROLLER_ID):
                 dev_entry[CONF_CONTROLLER_ID] = str(user_input.get(CONF_CONTROLLER_ID)).strip() or DEFAULT_CONTROLLER_ID
-            if has_udp and user_input.get(CONF_UDP_CONTROL_KEY):
+            if supports_udp and user_input.get(CONF_UDP_CONTROL_KEY):
                 dev_entry[CONF_UDP_CONTROL_KEY] = str(user_input.get(CONF_UDP_CONTROL_KEY)).strip()
-            if has_udp and user_input.get(CONF_UDP_CONTROL_IV):
+            if supports_udp and user_input.get(CONF_UDP_CONTROL_IV):
                 dev_entry[CONF_UDP_CONTROL_IV] = str(user_input.get(CONF_UDP_CONTROL_IV)).strip()
             new_devices[target_id] = dev_entry
             new_options["devices"] = new_devices

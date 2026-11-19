@@ -527,6 +527,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     _cleanup_cross_device_entities(hass, entry, target_dev_id)
 
+    try:
+        from homeassistant.helpers.issue_registry import async_delete_issue
+        async_delete_issue(hass, DOMAIN, "migration_successful")
+    except Exception:
+        pass
+
 
     # Start Local UDP Transport Singleton if not already running (excluded for Cloud-Only and IR-Only)
     udp_manager: LocalUdpTransportManager | None = None
@@ -575,15 +581,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             or getattr(dt, "udp_control_iv", None)
             or entry.data.get("udp_control_iv")
         )
-        if is_cloud_only:
-            udp_key = None
-            udp_iv = None
         dev_ip = (
             dev_opt.get(CONF_DEVICE_IP)
             or entry.options.get(CONF_DEVICE_IP)
             or entry.data.get("device_ip")
             or getattr(dt, "ip_address", None)
         )
+        primary_backend = dev_opt.get(CONF_PRIMARY_BACKEND) or entry.options.get(CONF_PRIMARY_BACKEND) or entry.data.get(CONF_PRIMARY_BACKEND)
+        secondary_backend = dev_opt.get("secondary_backend") or entry.options.get("secondary_backend") or entry.data.get("secondary_backend")
+        wants_udp = (primary_backend == "local_udp" or secondary_backend == "local_udp" or bool(dev_ip))
+        if is_cloud_only and not wants_udp:
+            udp_key = None
+            udp_iv = None
         controller_id = (
             dev_opt.get(CONF_CONTROLLER_ID)
             or entry.options.get(CONF_CONTROLLER_ID)
@@ -602,6 +611,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if dev_ip:
                 udp_manager.set_device_ip(device.id, dev_ip)
                 LOGGER.info("Registered Local UDP IP %s for device %s (cnt=%s)", dev_ip, device.id, controller_id)
+                try:
+                    from homeassistant.components import persistent_notification
+                    persistent_notification.async_dismiss(hass, f"panasonic_ac_udp_available_{entry.entry_id}")
+                except Exception:
+                    pass
 
             if hasattr(device, "send_udp_command"):
                 async def _initial_udp_query(dev=device, ctrl=controller_id) -> None:
@@ -783,38 +797,75 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     LOGGER.info("Removed config entry: %s (%s)", entry.title, entry.entry_id)
 
 
-def _notify_migration_successful(hass: HomeAssistant) -> None:
+def _notify_migration_successful(hass: HomeAssistant, entry: ConfigEntry | None = None) -> None:
     """Notify users of successful migration and device setup instructions."""
     try:
         from homeassistant.components import persistent_notification
-        title = "Panasonic AC India Migration Complete"
-        msg = (
-            "Your Panasonic AC integration has been successfully upgraded!\n\n"
-            "Each AC unit is now managed as an independent device entry with hybrid Cloud + IR support.\n\n"
-            "**To configure an IR Blaster, IR Receiver, or customize device settings:**\n"
-            "1. Go to **Settings → Devices & Services → Panasonic AC India**.\n"
-            "2. Find your AC device and click the **Configure (Settings Cog)** button.\n"
-            "3. Set up your **IR Blaster / Transmitter**, **IR Receiver**, or control preferences."
-        )
         persistent_notification.async_dismiss(hass, "miraie_20_migration_complete")
+        persistent_notification.async_dismiss(hass, "panasonic_ac_migration_complete")
+
+        # Clean up any obsolete repairs issue if present
+        try:
+            from homeassistant.helpers.issue_registry import async_delete_issue
+            async_delete_issue(hass, DOMAIN, "migration_successful")
+        except Exception:
+            pass
+
+        if entry is None:
+            return
+
+        # Pure IR devices do not support Local UDP
+        if entry.data.get("is_ir_only", False):
+            return
+
+        # Check if Local UDP is already configured (IP and Key both present)
+        devices_opt = entry.options.get("devices", {})
+        target_id = entry.data.get("device_id")
+        target_opt = devices_opt.get(target_id, {}) if target_id else {}
+
+        has_ip = bool(
+            target_opt.get(CONF_DEVICE_IP)
+            or entry.options.get(CONF_DEVICE_IP)
+            or entry.data.get(CONF_DEVICE_IP)
+        )
+        has_key = bool(
+            target_opt.get(CONF_UDP_CONTROL_KEY)
+            or entry.options.get(CONF_UDP_CONTROL_KEY)
+            or entry.data.get(CONF_UDP_CONTROL_KEY)
+        )
+
+        if has_ip and has_key:
+            return
+
+        # Device is cloud-connected or Wi-Fi capable, but IP is missing
+        dev_name = entry.data.get("device_name") or entry.data.get("name") or getattr(entry, "title", "Panasonic AC")
+        title = "Panasonic AC India — Local UDP Available"
+        msg = (
+            f"**Panasonic AC India Upgrade Complete (v2.1.0)**\n\n"
+            f"Your integration has been upgraded to support direct **Local UDP (Wi-Fi) control** for **{dev_name}**.\n\n"
+            f"To enable offline local Wi-Fi control:\n"
+            f"1. Go to **Settings → Devices & Services → Panasonic AC India**.\n"
+            f"2. Click **Configure** next to **{dev_name}**.\n"
+            f"3. Enter your AC unit's local IP address (UDP encryption keys have already been retrieved from your cloud account)."
+        )
         persistent_notification.async_create(
             hass,
             msg,
             title=title,
-            notification_id="panasonic_ac_migration_complete",
+            notification_id=f"panasonic_ac_udp_available_{entry.entry_id}",
         )
     except Exception as exc:
         LOGGER.debug("Could not send migration notification: %s", exc)
 
 
 async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> bool:
-    """Migrate mirAIe_in config entry to version 2."""
+    """Migrate mirAIe_in config entry to version 3."""
     LOGGER.info("Migrating mirAIe_in config entry %s from version %s", config_entry.entry_id, config_entry.version)
 
-    if config_entry.version == 1:
-        hass.config_entries.async_update_entry(config_entry, version=2)
-        LOGGER.info("Migrated mirAIe_in config entry %s to version 2", config_entry.entry_id)
-        _notify_migration_successful(hass)
+    if config_entry.version < 3:
+        hass.config_entries.async_update_entry(config_entry, version=3)
+        LOGGER.info("Migrated mirAIe_in config entry %s to version 3", config_entry.entry_id)
+        _notify_migration_successful(hass, config_entry)
 
     return True
 
