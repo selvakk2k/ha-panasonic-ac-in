@@ -170,6 +170,41 @@ class TestBinarySensorPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(MirAIeDeviceOnlineBinarySensor, types_added)
         self.assertIn(MirAIeIRBlasterAvailableBinarySensor, types_added)
 
+    def test_local_udp_binary_sensor_reachability(self):
+        """Test MirAIeLocalUdpConnectedBinarySensor strictly checks UDP packet reachability."""
+        import time
+        from custom_components.miraie_in.binary_sensor import MirAIeLocalUdpConnectedBinarySensor
+
+        sensor = MirAIeLocalUdpConnectedBinarySensor(self.mock_device, self.coordinator)
+
+        # No transport
+        self.mock_device.udp_transport = None
+        self.assertFalse(sensor.is_on)
+
+        # Transport running, but device not registered
+        mock_transport = MagicMock()
+        mock_transport.is_running = True
+        mock_transport._devices = {}
+        self.mock_device.udp_transport = mock_transport
+        self.assertFalse(sensor.is_on)
+
+        # Protocol registered with IP, but last_seen is 0 (never seen UDP packet)
+        # Even with status.is_online = True, UDP binary sensor must be False
+        mock_protocol = MagicMock()
+        mock_protocol.ip_address = "192.168.0.50"
+        mock_protocol.last_seen = 0.0
+        mock_transport._devices[self.mock_device.id] = mock_protocol
+        self.mock_device.status.is_online = True
+        self.assertFalse(sensor.is_on)
+
+        # Recent packet seen (within 300s) -> True
+        mock_protocol.last_seen = time.time() - 10
+        self.assertTrue(sensor.is_on)
+
+        # Stale packet seen (> 300s) -> False
+        mock_protocol.last_seen = time.time() - 350
+        self.assertFalse(sensor.is_on)
+
 
 if __name__ == "__main__":
     unittest.main()

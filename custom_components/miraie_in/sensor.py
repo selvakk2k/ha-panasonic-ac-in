@@ -35,7 +35,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
-from .utils import six_months_ago, get_last_sunday, get_devices_for_entry, is_ir_only_entry
+from .utils import six_months_ago, get_last_sunday, get_devices_for_entry, is_ir_only_entry, safe_async_write_ha_state, build_device_info
 from .logger import LOGGER
 
 
@@ -110,16 +110,7 @@ class MirAIeEnergySensor(SensorEntity, ABC):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                # Serial numbers are unique identifiers within a specific domain
-                (DOMAIN, self.device.id)
-            },
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
 class MirAIeYesterdayEnergySensor(MirAIeEnergySensor):
     def __init__(self, hub: MirAIeHub, device: MirAIeDevice):
@@ -402,9 +393,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     devices = get_devices_for_entry(hub, entry)
 
 
-    # 1. Setup Energy Sensors (which need active polling — Wi-Fi models only)
+    # 1. Setup Energy Sensors (which need active polling — Wi-Fi models with cloud account only)
     energy_sensors: list[MirAIeEnergySensor] = []
-    if not is_ir_entry:
+    has_username = bool(entry.data.get("username"))
+
+    if not is_ir_entry and has_username:
         for device in devices:
             coord = coordinators.get(device.id)
             has_wifi = getattr(coord, "has_wifi", True) if coord else getattr(getattr(device, "details", None), "has_wifi", True)
@@ -434,22 +427,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                 MirAIeWeeklyEnergySensor(hub, device),
                 MirAIeMonthlyEnergySensor(hub, device),
             ]
-    async_add_entities(energy_sensors, update_before_add=True)
+        if energy_sensors:
+            async_add_entities(energy_sensors, update_before_add=True)
 
-    poll_sensors = list(energy_sensors)
+            poll_sensors = list(energy_sensors)
 
-    async def update_sensors(now=None):
-        # Gather updates concurrently to avoid sequential HTTP requests
-        await asyncio.gather(
-            *(sensor.async_update() for sensor in poll_sensors),
-            return_exceptions=True
-        )
-        for sensor in poll_sensors:
-            sensor.async_write_ha_state()  # Ensure HA is notified of new data
+            async def update_sensors(now=None):
+                # Gather updates concurrently to avoid sequential HTTP requests
+                await asyncio.gather(
+                    *(sensor.async_update() for sensor in poll_sensors),
+                    return_exceptions=True
+                )
+                for sensor in poll_sensors:
+                    sensor.async_write_ha_state()  # Ensure HA is notified of new data
 
-    cancel_interval = async_track_time_interval(hass, update_sensors, timedelta(minutes=30))
-    if hasattr(entry, "async_on_unload"):
-        entry.async_on_unload(cancel_interval)
+            cancel_interval = async_track_time_interval(hass, update_sensors, timedelta(minutes=30))
+            if hasattr(entry, "async_on_unload"):
+                entry.async_on_unload(cancel_interval)
+    else:
+        ent_reg = er.async_get(hass)
+        for device in devices:
+            for suffix in ["yesterday_energy", "today_energy", "weekly_energy", "monthly_energy"]:
+                unq_id = f"{device.id}_{suffix}"
+                entity_id = ent_reg.async_get_entity_id("sensor", DOMAIN, unq_id)
+                if entity_id:
+                    ent_reg.async_remove(entity_id)
+                    LOGGER.info("Cleaned up orphaned energy sensor %s for offline local UDP entry", entity_id)
 
     # 2. Setup Non-Polling Sensors (updated via device callback pushed via MQTT)
     pushed_sensors: list[SensorEntity] = []
@@ -486,24 +489,16 @@ class MirAIeRoomTemperatureSensor(SensorEntity):
 
     @property
     def native_value(self) -> float | None:
-        return self.device.status.room_temperature
+        st = getattr(self.device, "status", None)
+        return getattr(st, "room_temperature", None) if st else None
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self):
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -530,24 +525,16 @@ class MirAIeWifiSignalSensor(SensorEntity):
 
     @property
     def native_value(self) -> int:
-        return getattr(self.device.status, "wifi_signal", 0)
+        st = getattr(self.device, "status", None)
+        return getattr(st, "wifi_signal", 0) if st else 0
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self):
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -589,13 +576,7 @@ class MirAIeErrorCodeSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=getattr(getattr(self.device, "details", None), "brand", "Panasonic"),
-            model=getattr(getattr(self.device, "details", None), "model_number", ""),
-            sw_version=getattr(getattr(self.device, "details", None), "firmware_version", ""),
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self):
         if self.coordinator:
@@ -603,10 +584,7 @@ class MirAIeErrorCodeSensor(SensorEntity):
                 self.coordinator.async_add_listener(self.async_write_ha_state)
             )
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -631,24 +609,20 @@ class MirAIeControlSourceSensor(SensorEntity):
 
     @property
     def native_value(self) -> str:
+        default_origin = "Local UDP" if (self.coordinator and getattr(self.coordinator, "primary_backend", None) == "local_udp") else "Cloud"
         if self.coordinator and self.coordinator.state:
-            return str(self.coordinator.state.get("last_controlled_by", "Cloud"))
-        return "Cloud"
+            return str(self.coordinator.state.get("last_controlled_by", default_origin))
+        return default_origin
 
     @property
     def extra_state_attributes(self) -> dict[str, str]:
-        raw_source = getattr(self.device.status, "control_source", "unknown")
+        st = getattr(self.device, "status", None)
+        raw_source = getattr(st, "control_source", "unknown") if st else "unknown"
         return {"raw_control_source": raw_source}
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self):
         if self.coordinator:
@@ -656,10 +630,7 @@ class MirAIeControlSourceSensor(SensorEntity):
                 self.coordinator.async_add_listener(self.async_write_ha_state)
             )
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -702,13 +673,7 @@ class MirAIeModelCapabilitiesSensor(SensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
 
 

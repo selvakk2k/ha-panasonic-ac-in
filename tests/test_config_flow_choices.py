@@ -24,7 +24,9 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
         res = await flow.async_step_user()
         self.assertEqual(res["type"], "menu")
         self.assertEqual(res["step_id"], "user")
-        self.assertIn("cloud_account", res["menu_options"])
+        self.assertIn("local_udp", res["menu_options"])
+        self.assertIn("cloud", res["menu_options"])
+        self.assertIn("hybrid", res["menu_options"])
         self.assertIn("ir_device", res["menu_options"])
 
     async def test_ir_device_step_creation(self):
@@ -274,6 +276,37 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(res_confirm["reason"], "reauth_successful")
             hass.config_entries.async_update_entry.assert_called_once()
             hass.config_entries.async_reload.assert_called_once_with("test_entry_123")
+
+    async def test_manual_local_udp_duplicate_mac_aborts(self):
+        """Test that adding a manual local UDP device with an already-configured MAC aborts."""
+        from datetime import date
+        from custom_components.miraie_in.utils import six_months_ago
+
+        hass = MockHass()
+        existing_entry = MagicMock()
+        existing_entry.data = {
+            "device_id": "existing_dev_123",
+            "device_mac": "AABBCCDDEEFF",
+        }
+        existing_entry.options = {}
+        hass.config_entries.async_entries = MagicMock(return_value=[existing_entry])
+
+        flow = ConfigFlow()
+        flow.hass = hass
+
+        user_input = {
+            "name": "Living Room AC",
+            "device_ip": "192.168.1.100",
+            "device_mac": "AA:BB:CC:DD:EE:FF",
+            "udp_control_key": "00" * 32,
+            "udp_control_iv": "11" * 16,
+            "controller_id": "2",
+            "install_date": six_months_ago(date.today()).isoformat(),
+        }
+
+        res = await flow.async_step_local_udp_manual(user_input)
+        self.assertEqual(res["type"], "abort")
+        self.assertEqual(res["reason"], "already_configured")
 
 
 if __name__ == "__main__":

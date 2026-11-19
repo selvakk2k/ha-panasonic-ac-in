@@ -43,6 +43,8 @@ class TestSwitchAndButtonPlatform(unittest.IsolatedAsyncioTestCase):
         self.mock_device = MagicMock()
         self.mock_device.id = "dev_sb_test"
         self.mock_device.friendly_name = "Dining Room AC"
+        self.mock_device.supports_local_udp = False
+        self.mock_device.udp_transport = None
         self.mock_device.set_display_mode = AsyncMock()
         self.mock_device.set_nanoe = AsyncMock()
         self.mock_device.set_preset_mode = AsyncMock()
@@ -98,12 +100,30 @@ class TestSwitchAndButtonPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(switch.is_on)
 
         await switch.async_turn_off()
-        self.mock_device.set_display_mode.assert_awaited_with(LibDisplayMode.OFF)
+        self.mock_device.set_display_mode.assert_awaited_with(LibDisplayMode.OFF, transport="cloud")
         self.assertEqual(self.coordinator.state.get("display"), "off")
 
         await switch.async_turn_on()
-        self.mock_device.set_display_mode.assert_awaited_with(LibDisplayMode.ON)
+        self.mock_device.set_display_mode.assert_awaited_with(LibDisplayMode.ON, transport="cloud")
         self.assertEqual(self.coordinator.state.get("display"), "on")
+
+    async def test_display_switch_local_udp(self):
+        """Test display switch dispatches via Local UDP when available."""
+        self.mock_device.supports_local_udp = True
+        self.mock_device.udp_transport = MagicMock()
+        coord_udp = MirAIeDeviceCoordinator(
+            hass=self.hass,
+            entry_id=self.mock_entry.entry_id,
+            device_id=self.mock_device.id,
+            model_code="CS-HZ24XKE",
+            has_wifi=True,
+            blaster_entity_id=None,
+            primary_backend="local_udp",
+        )
+        switch = MirAIeDisplaySwitch(self.mock_device, coord_udp)
+        await switch.async_turn_off()
+        self.mock_device.set_display_mode.assert_awaited_with(LibDisplayMode.OFF, transport="udp")
+        self.assertEqual(coord_udp.state.get("last_controlled_by"), "Local UDP")
 
     async def test_display_switch_ir_primary(self):
         """Test display switch dispatches IR command when primary_backend is ir."""
@@ -140,12 +160,30 @@ class TestSwitchAndButtonPlatform(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(switch.is_on)
 
         await switch.async_turn_off()
-        self.mock_device.set_nanoe.assert_awaited_with(False)
+        self.mock_device.set_nanoe.assert_awaited_with(False, transport="cloud")
         self.assertFalse(self.coordinator.state.get("nanoe"))
 
         await switch.async_turn_on()
-        self.mock_device.set_nanoe.assert_awaited_with(True)
+        self.mock_device.set_nanoe.assert_awaited_with(True, transport="cloud")
         self.assertTrue(self.coordinator.state.get("nanoe"))
+
+    async def test_nanoe_switch_local_udp(self):
+        """Test nanoe switch dispatches via Local UDP when available."""
+        self.mock_device.supports_local_udp = True
+        self.mock_device.udp_transport = MagicMock()
+        coord_udp = MirAIeDeviceCoordinator(
+            hass=self.hass,
+            entry_id=self.mock_entry.entry_id,
+            device_id=self.mock_device.id,
+            model_code="CS-HZ24XKE",
+            has_wifi=True,
+            blaster_entity_id=None,
+            primary_backend="local_udp",
+        )
+        switch = MirAIeNanoeSwitch(self.mock_device, coord_udp)
+        await switch.async_turn_on()
+        self.mock_device.set_nanoe.assert_awaited_with(True, transport="udp")
+        self.assertEqual(coord_udp.state.get("last_controlled_by"), "Local UDP")
 
     async def test_nanoe_switch_ir_primary(self):
         """Test nanoe switch dispatches IR command when primary_backend is ir."""

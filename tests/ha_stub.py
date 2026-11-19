@@ -154,6 +154,10 @@ def setup_ha_stubs():
             self.unique_id = unique_id
         def _abort_if_unique_id_configured(self):
             pass
+        def _async_current_entries(self):
+            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "config_entries"):
+                return self.hass.config_entries.async_entries(getattr(self, "handler", None))
+            return []
         @classmethod
         def __init_subclass__(cls, **kwargs):
             super().__init_subclass__()
@@ -207,6 +211,7 @@ def setup_ha_stubs():
         BINARY_SENSOR = "binary_sensor"
         BUTTON = "button"
         SWITCH = "switch"
+        SELECT = "select"
 
     class UnitOfPower(Enum):
         KILO_WATT = "kW"
@@ -503,6 +508,31 @@ def setup_ha_stubs():
             return [async_redact_data(item, to_redact) for item in data]
         return data
     diag_mod.async_redact_data = async_redact_data
+
+    # Select helper stubs
+    select_mod = types.ModuleType("homeassistant.components.select")
+    class SelectEntity:
+        _attr_should_poll: bool = False
+        _attr_has_entity_name: bool = False
+        _attr_name: str | None = None
+        _attr_unique_id: str | None = None
+        _attr_translation_key: str | None = None
+        _attr_options: list[str] = []
+        _attr_current_option: str | None = None
+
+        @property
+        def unique_id(self) -> str | None:
+            return self._attr_unique_id
+
+        def async_write_ha_state(self) -> None:
+            pass
+
+        def async_on_remove(self, func):
+            pass
+
+    select_mod.SelectEntity = SelectEntity
+    sys.modules["homeassistant.components.select"] = select_mod
+    setattr(homeassistant.components, "select", select_mod)
 
     # restore_state helper stub
     import homeassistant.helpers.restore_state

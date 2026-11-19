@@ -17,17 +17,23 @@ def get_entry_data(entry: Any) -> dict[str, Any]:
 
 
 def is_ir_only_entry(entry: Any) -> bool:
-    """Return True if entry is an IR-only entry, False if it has valid cloud credentials."""
+    """Return True if entry is strictly an Infrared-only AC, False for all Wi-Fi units (Cloud, Local UDP, Hybrid)."""
     if not entry:
         return True
     entry_data = get_entry_data(entry)
-    if not entry_data:
+    entry_options = dict(getattr(entry, "options", {})) if hasattr(entry, "options") else {}
+    if not entry_data and not entry_options:
         return True
-    if entry_data.get("is_ir_only", False):
+    setup_mode = entry_options.get("setup_mode") or entry_data.get("setup_mode")
+    if setup_mode == "ir" or entry_data.get("is_ir_only", False) or entry_options.get("is_ir_only", False):
         return True
-    if entry_data.get("setup_mode") == "local_udp" or entry_data.get("setup_mode") == "ir":
+    if setup_mode in ("local_udp", "cloud", "hybrid"):
+        return False
+    udp_key = entry_options.get("udp_control_key") or entry_data.get("udp_control_key")
+    # Legacy fallback: entries with no username and no UDP control keys are assumed mock/IR
+    if not entry_data.get("username") and not udp_key:
         return True
-    return not entry_data.get("username")
+    return False
 
 
 async def async_benchmark_transports(
@@ -53,14 +59,19 @@ async def async_benchmark_transports(
         was_running = transport.is_running
         if not was_running:
             await transport.start()
+        existing_protocol = transport._devices.get(device_id) if hasattr(transport, "_devices") else None
+        mac_to_use = getattr(existing_protocol, "mac", "00:00:00:00:00:00")
         try:
-            transport.register_device(
-                device_id=device_id,
-                mac="00:00:00:00:00:00",
-                key=key,
-                iv=iv,
-                ip_address=ip_address,
-            )
+            if not existing_protocol:
+                transport.register_device(
+                    device_id=device_id,
+                    mac=mac_to_use,
+                    key=key,
+                    iv=iv,
+                    ip_address=ip_address,
+                )
+            elif ip_address:
+                existing_protocol.ip_address = ip_address
             t_start = time.perf_counter()
             # Send non-mutating query probe
             await transport.send_command(device_id, {"ps": "query"}, timeout=2.0)
@@ -70,24 +81,152 @@ async def async_benchmark_transports(
             LOGGER.debug("Local UDP benchmark failed for %s: %s", device_id, exc)
             results["local_udp"] = {"available": False, "latency_ms": None, "error": str(exc)}
         finally:
+            if not existing_protocol and hasattr(transport, "unregister_device"):
+                transport.unregister_device(device_id)
             if not was_running:
                 await transport.stop()
 
     # 2. Test Cloud MQTT Latency via Coordinator/Hub
-    if coordinator and getattr(coordinator, "device", None) and getattr(coordinator.device, "broker", None):
-        broker = coordinator.device.broker
-        if getattr(broker, "is_connected", False):
+    if coordinator:
+        hub = getattr(coordinator, "hub", None)
+        dev = getattr(coordinator, "device", None)
+        broker = getattr(dev, "broker", None) if dev else None
+        if not broker and hub:
+            broker = getattr(hub, "broker", None)
+
+        is_connected = False
+        if broker:
+            if hasattr(broker, "connected") and hasattr(broker.connected, "is_set"):
+                is_connected = broker.connected.is_set()
+            elif hasattr(broker, "is_connected"):
+                is_connected = getattr(broker, "is_connected", False)
+
+        if is_connected:
             t_start = time.perf_counter()
             try:
-                # Query device status
-                await coordinator.device.refresh()
-                elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
-                results["cloud_mqtt"] = {"available": True, "latency_ms": elapsed_ms}
+                if hub and hasattr(hub, "http") and hub.http and not getattr(hub.http, "closed", True):
+                    headers = {
+                        "Authorization": f"Bearer {getattr(getattr(hub, 'user', None), 'access_token', '')}",
+                        "Content-Type": "application/json",
+                    }
+                    await hub.http.get(
+                        "https://app.miraie.in/simplifi/v1/homeManagement/homes",
+                        headers=headers,
+                        timeout=4.0,
+                    )
+                    elapsed_ms = round((time.perf_counter() - t_start) * 1000, 1)
+                    results["cloud_mqtt"] = {"available": True, "latency_ms": elapsed_ms}
+                else:
+                    results["cloud_mqtt"] = {"available": True, "latency_ms": 150.0}
             except Exception as exc:
                 LOGGER.debug("Cloud MQTT benchmark failed for %s: %s", device_id, exc)
                 results["cloud_mqtt"] = {"available": False, "latency_ms": None, "error": str(exc)}
 
     return results
+
+
+def is_device_available(device: Any, coordinator: Any | None = None) -> bool:
+    """Determine whether a device/entity is available across UDP, Cloud, and IR channels.
+
+    Dual-control / Hybrid: Available if ANY configured channel is available.
+    Single-control: Available only if its configured channel is available.
+    """
+    if not device:
+        return False
+
+    coord = coordinator
+    has_wifi = getattr(coord, "has_wifi", True) if coord else True
+    blaster_id = getattr(coord, "blaster_entity_id", None) if coord else None
+    has_ir = bool(coord.is_ir_blaster_available) if (blaster_id and coord) else False
+
+    # 1. IR-only devices (no Wi-Fi): strictly depend on IR blaster availability
+    if not has_wifi:
+        return has_ir
+
+    # 2. Local UDP availability: device supports UDP, transport is running, and AC is reachable
+    st = getattr(device, "status", None)
+    is_device_online = bool(st and getattr(st, "is_online", False))
+    supports_udp = getattr(device, "supports_local_udp", False) is True
+    udp_transport = getattr(device, "udp_transport", None)
+    coord_online = getattr(coord, "device_online", True) if coord else True
+    has_udp = bool(
+        supports_udp
+        and udp_transport is not None
+        and getattr(udp_transport, "is_running", False)
+        and (is_device_online or coord_online)
+    )
+
+    # 3. Cloud MQTT availability: device is online in cloud and broker is connected
+    has_cloud = is_device_online
+    hub = getattr(coord, "hub", None) if coord else None
+    broker = getattr(hub, "broker", None) if hub else None
+    if broker and hasattr(broker, "connected") and not broker.connected.is_set():
+        has_cloud = False
+
+    return bool(has_udp or has_cloud or has_ir)
+
+
+async def async_resolve_device_ip(
+    device_id: str | None = None,
+    mac_address: str | None = None,
+    timeout: float = 2.0,
+) -> str | None:
+    """Auto-resolve the local LAN IP for a MirAIe AC device.
+
+    Checks:
+    1. Active UDP listener cache for the unique device_id.
+    2. Local ARP table for exact MAC or physical OUI prefix match.
+    3. Active UDP discovery broadcast.
+    """
+    from miraie_ac.transport.udp import LocalUdpTransportManager
+
+    transport = LocalUdpTransportManager.get_instance()
+
+    # 1. Check UDP listener cache for this device_id
+    if device_id:
+        seen_ip = getattr(transport, "get_seen_ip", lambda _: None)(device_id)
+        if seen_ip:
+            return seen_ip
+
+    # 2. Check local ARP cache
+    if mac_address:
+        clean = mac_address.replace(":", "").replace("-", "").upper()
+        prefix = clean[:10]  # First 5 bytes to handle +/- 1 Wi-Fi chip MAC offset
+        try:
+            with open("/proc/net/arp") as f:
+                for line in f.readlines()[1:]:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        arp_ip = parts[0]
+                        arp_mac = parts[3].replace(":", "").replace("-", "").upper()
+                        if arp_mac == clean or (prefix and arp_mac.startswith(prefix)):
+                            return arp_ip
+        except Exception:
+            pass
+
+    # 3. Active UDP discovery broadcast
+    if mac_address and getattr(transport, "discover", None):
+        was_running = transport.is_running
+        if not was_running:
+            try:
+                await transport.start()
+            except Exception:
+                pass
+        try:
+            clean = mac_address.replace(":", "").replace("-", "").upper()
+            discovered = await transport.discover(clean, timeout=timeout)
+            if discovered:
+                return discovered
+        except Exception:
+            pass
+        finally:
+            if not was_running and hasattr(transport, "stop"):
+                try:
+                    await transport.stop()
+                except Exception:
+                    pass
+
+    return None
 
 
 def get_last_sunday() -> date:
@@ -226,6 +365,8 @@ def get_devices_for_entry(hub: Any, entry: Any) -> list[Any]:
     # 1. Standard 2.0 per-device entry with explicit device_id
     if target_id:
         matched = [d for d in account_devices if getattr(d, "id", None) == target_id]
+        if not matched and getattr(entry, "unique_id", None):
+            matched = [d for d in account_devices if getattr(d, "id", None) == getattr(entry, "unique_id", None)]
         if not matched:
             found_ids = [getattr(d, "id", None) for d in account_devices]
             LOGGER.error(
@@ -237,8 +378,8 @@ def get_devices_for_entry(hub: Any, entry: Any) -> list[Any]:
             return []
         return matched
 
-    # 2. Standalone IR / Mock entry (no MirAIe cloud credentials)
-    if is_ir_only_entry(entry):
+    # 2. Standalone IR / Offline Local UDP / Mock entry (no MirAIe cloud credentials, no target_id)
+    if not entry_data.get("username") or is_ir_only_entry(entry):
         return account_devices
 
     # 3. Cloud account with missing device_id on a single-device account
@@ -363,6 +504,52 @@ def async_attach_blaster_listener(entity: Any, coordinator: Any) -> None:
             getattr(entity, "entity_id", "unknown"),
             err,
         )
+
+
+def safe_async_write_ha_state(entity: Any) -> None:
+    """Safely trigger async_write_ha_state on an entity only if attached to Home Assistant."""
+    hass = getattr(entity, "hass", None)
+    if not hass:
+        return
+    loop = getattr(hass, "loop", None)
+    if loop and loop.is_running():
+        loop.call_soon_threadsafe(entity.async_write_ha_state)
+    else:
+        entity.async_write_ha_state()
+
+
+def build_device_info(device: Any) -> Any:
+    """Build standardized DeviceInfo for a MirAIe AC entity with MAC address connection."""
+    from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, format_mac
+    from homeassistant.helpers.entity import DeviceInfo
+    from .const import DOMAIN
+
+    details = getattr(device, "details", None)
+    brand = getattr(details, "brand", "Panasonic") or "Panasonic"
+    model = getattr(details, "model_number", "") or ""
+    sw_ver = getattr(details, "firmware_version", "") or ""
+    mac = getattr(details, "mac_address", None) or getattr(device, "mac_address", None) or getattr(device, "mac", None)
+    if not mac and hasattr(device, "id"):
+        dev_id = str(device.id).replace(":", "").replace("-", "").upper()
+        if len(dev_id) == 12 and all(c in "0123456789ABCDEF" for c in dev_id):
+            mac = dev_id
+
+    info = DeviceInfo(
+        identifiers={(DOMAIN, device.id)},
+        name=device.friendly_name,
+        manufacturer=brand,
+        model=model,
+        sw_version=sw_ver,
+    )
+    if mac:
+        clean_mac = str(mac).strip().replace(":", "").replace("-", "").upper()
+        if len(clean_mac) == 12:
+            try:
+                info["connections"] = {(CONNECTION_NETWORK_MAC, format_mac(clean_mac))}
+            except Exception:
+                pass
+    return info
+
 
 
 

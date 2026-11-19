@@ -19,6 +19,7 @@ from homeassistant.components.switch import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -29,7 +30,14 @@ from .const import (
 )
 
 from .logger import LOGGER
-from .utils import get_devices_for_entry, async_attach_blaster_listener, is_ir_only_entry
+from .utils import (
+    get_devices_for_entry,
+    async_attach_blaster_listener,
+    is_ir_only_entry,
+    safe_async_write_ha_state,
+    is_device_available,
+    build_device_info,
+)
 
 PARALLEL_UPDATES = 0
 
@@ -54,8 +62,10 @@ async def async_setup_entry(
 
         # Buzzer Switch gating & orphan cleanup
         has_buzzer = False
-        if coordinator and hasattr(coordinator, "capabilities") and coordinator.capabilities:
+        if coordinator and hasattr(coordinator, "capabilities") and coordinator.capabilities and "has_buzzer" in coordinator.capabilities:
             has_buzzer = bool(coordinator.capabilities.get("has_buzzer", False))
+        elif getattr(device, "supports_buzzer", False) is True:
+            has_buzzer = True
 
         if has_buzzer:
             entities.append(MirAIeBuzzerSwitch(device, coordinator))
@@ -66,14 +76,37 @@ async def async_setup_entry(
                 ent_reg.async_remove(buzzer_entity_id)
                 LOGGER.info("Cleaned up unsupported buzzer switch %s for device %s", buzzer_entity_id, device.id)
         
-        # Untested: Expose Nanoe switch only if the model supports it
-        model_number = getattr(getattr(device, "details", None), "model_number", None)
-        if supports_nanoe(model_number):
+        # Expose Nanoe switch only if the model supports it
+        has_nanoe = False
+        if coordinator and hasattr(coordinator, "capabilities") and coordinator.capabilities and "has_nanoe" in coordinator.capabilities:
+            has_nanoe = bool(coordinator.capabilities.get("has_nanoe", False))
+        elif getattr(device, "supports_nanoe", False) is True:
+            has_nanoe = True
+        else:
+            model_number = getattr(getattr(device, "details", None), "model_number", None)
+            has_nanoe = supports_nanoe(model_number)
+
+        if has_nanoe:
             entities.append(MirAIeNanoeSwitch(device, coordinator))
+        else:
+            nanoe_unq_id = f"{device.id}_nanoe"
+            nanoe_entity_id = ent_reg.async_get_entity_id("switch", DOMAIN, nanoe_unq_id)
+            if nanoe_entity_id:
+                ent_reg.async_remove(nanoe_entity_id)
+                LOGGER.info("Cleaned up unsupported nanoe switch %s for device %s", nanoe_entity_id, device.id)
 
         if coordinator:
             is_ir_only = is_ir_only_entry(entry) or not coordinator.has_wifi
-            if not is_ir_only and coordinator.blaster_entity_id:
+            has_udp = bool(
+                getattr(coordinator, "has_udp", False)
+                or (getattr(device, "supports_local_udp", False) and getattr(device, "udp_transport", None))
+            )
+            has_cloud = bool(coordinator.has_wifi and not is_ir_only and getattr(hub, "broker", None))
+            has_ir = bool(coordinator.blaster_entity_id)
+            transports_count = sum([has_udp, has_cloud, has_ir])
+            is_hybrid = transports_count >= 2
+
+            if is_hybrid:
                 entities.append(MirAIeHybridSubmodeSwitch(device, coordinator))
                 entities.append(MirAIeBackendSelectSwitch(device, coordinator))
             else:
@@ -82,7 +115,7 @@ async def async_setup_entry(
                     entity_id = ent_reg.async_get_entity_id("switch", DOMAIN, unq_id)
                     if entity_id:
                         ent_reg.async_remove(entity_id)
-                        LOGGER.info("Cleaned up orphaned entity %s after IR blaster removal", entity_id)
+                        LOGGER.info("Cleaned up orphaned hybrid entity %s (single transport)", entity_id)
 
     async_add_entities(entities)
 
@@ -107,44 +140,22 @@ class MirAIeDisplaySwitch(SwitchEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                # Serial numbers are unique identifiers within a specific domain
-                (DOMAIN, self.device.id)
-            },
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     @property
     def is_on(self) -> bool:
-        """Return True if display is on."""
+        """Return True if display is on or in night mode."""
         if self.coordinator and "display" in self.coordinator.state:
-            return self.coordinator.state.get("display") == "on"
-        return self.device.status.display_mode == DisplayMode.ON
+            val = self.coordinator.state.get("display")
+            return val in (True, "on", "night")
+        st = getattr(self.device, "status", None)
+        mode = getattr(st, "display_mode", None)
+        return bool(st and mode in (DisplayMode.ON, DisplayMode.NIGHT))
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available."""
-        coord = self.coordinator
-        has_wifi = getattr(coord, "has_wifi", True) if coord else True
-        has_cloud = bool(getattr(getattr(self.device, "status", None), "is_online", False))
-        if coord and hasattr(coord, "hub") and getattr(coord.hub, "broker", None):
-            broker = coord.hub.broker
-            if hasattr(broker, "connected") and not broker.connected.is_set():
-                has_cloud = False
-
-        blaster_id = coord.blaster_entity_id if coord else None
-        has_blaster = bool(blaster_id)
-        has_ir = bool(coord.is_ir_blaster_available) if (has_blaster and coord) else False
-
-        if has_blaster and has_wifi:
-            return has_cloud or has_ir
-        elif has_blaster and not has_wifi:
-            return has_ir
-        return has_cloud
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, self.coordinator)
 
     async def _send_display_command(self, turn_on: bool) -> None:
         target_mode = DisplayMode.ON if turn_on else DisplayMode.OFF
@@ -154,17 +165,34 @@ class MirAIeDisplaySwitch(SwitchEntity):
         broker_connected = broker.connected.is_set() if (broker and hasattr(broker, "connected")) else True
         is_cloud_offline = (not getattr(getattr(self.device, "status", None), "is_online", True)) or (not broker_connected)
         has_wifi = getattr(coord, "has_wifi", True) if coord else True
-        use_ir_first = (
-            coord and (
-                (not has_wifi)
-                or (is_cloud_offline and getattr(coord, "blaster_entity_id", None))
-            )
-        )
+        supports_udp = getattr(self.device, "supports_local_udp", False) is True
+        has_udp = supports_udp and getattr(self.device, "udp_transport", None) is not None
+        primary = getattr(coord, "primary_backend", "cloud") if coord else "cloud"
+        secondary = getattr(coord, "secondary_backend", None) if coord else None
+        submode = getattr(coord, "hybrid_submode", "auto") if coord else "auto"
+        blaster_id = getattr(coord, "blaster_entity_id", None) if coord else None
+
+        # Build candidate priority list (deduplicating while preserving order)
+        # In Manual Control, failover is disabled: limit to primary transport only
+        candidate_backends = [primary] if submode == "manual" else [primary, secondary]
+        order = []
+        for b in candidate_backends:
+            if b and b != "none" and b not in order:
+                order.append(b)
+
+        # Preserve legacy Cloud fallback for older IR-primary entries without explicit secondary backend
+        if submode != "manual" and primary == "ir" and not secondary and has_wifi and "cloud" not in order:
+            order.append("cloud")
+
+        first_transport = order[0] if order else "cloud"
+        origin_label = "Local UDP" if first_transport == "local_udp" else ("IR" if first_transport == "ir" else "Cloud")
+
+        prev_display = coord.state.get("display") if coord else None
 
         if coord:
             coord.async_optimistic_update(
                 display=turn_on,
-                origin="IR" if use_ir_first else "Cloud",
+                origin=origin_label,
             )
             if hasattr(self, "async_write_ha_state"):
                 try:
@@ -172,23 +200,73 @@ class MirAIeDisplaySwitch(SwitchEntity):
                 except Exception:
                     pass
 
-        if use_ir_first and coord:
-            success = await coord.async_dispatch_ir_command(
-                mode="display",
-                display=turn_on,
-                origin="IR Blaster" if getattr(coord, "primary_backend", "cloud") == "ir" else "IR Failover (Offline)",
-            )
-            if success:
-                return
-            LOGGER.warning("IR display command failed for %s, falling back to Cloud", self.device.id)
+        dispatched = False
+        for transport in order:
+            if transport == "local_udp" and has_udp:
+                try:
+                    await self.device.set_display_mode(target_mode, transport="udp")
+                    if coord:
+                        coord.state["last_controlled_by"] = "Local UDP"
+                    dispatched = True
+                    break
+                except Exception as err:
+                    LOGGER.warning("Local UDP display command failed for %s: %s", self.device.id, err)
+            elif transport == "cloud":
+                try:
+                    await self.device.set_display_mode(target_mode, transport="cloud")
+                    if coord:
+                        coord.state["last_controlled_by"] = "Cloud"
+                    dispatched = True
+                    break
+                except Exception as err:
+                    LOGGER.warning("Cloud display command failed for %s: %s", self.device.id, err)
+            elif transport == "ir" and blaster_id:
+                # If target state already matches physical state, skip blind toggle to prevent inverting
+                current_disp = prev_display
+                current_is_on = (current_disp in ("on", "night"))
+                if current_disp is not None and turn_on == current_is_on:
+                    LOGGER.debug("Skipping IR display toggle for %s: display is already %s", self.device.id, current_disp)
+                    dispatched = True
+                    break
+                try:
+                    origin = "IR Blaster" if primary == "ir" else "IR Failover (Offline)"
+                    success = await coord.async_dispatch_ir_command(
+                        mode="display",
+                        display=turn_on,
+                        origin=origin,
+                    )
+                    if success:
+                        if coord:
+                            coord.state["last_controlled_by"] = "IR Blaster"
+                        dispatched = True
+                        break
+                    LOGGER.warning("IR display command failed for %s", self.device.id)
+                except Exception as err:
+                    LOGGER.warning("IR display command error for %s: %s", self.device.id, err)
 
-        try:
-            await self.device.set_display_mode(target_mode)
-        except Exception as err:
-            LOGGER.warning("Cloud display command failed for %s: %s", self.device.id, err)
-            if coord and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None):
+        if (
+            not dispatched
+            and coord
+            and submode == "auto"
+            and secondary != "none"
+            and blaster_id
+            and "ir" not in order
+        ):
+            current_disp = prev_display
+            current_is_on = (current_disp in ("on", "night"))
+            if current_disp is not None and turn_on == current_is_on:
+                LOGGER.debug("Skipping auto failover IR display toggle for %s: already %s", self.device.id, current_disp)
+                dispatched = True
+            else:
                 LOGGER.info("Auto Failover triggered: Transmitting IR display command for %s", self.device.id)
-                await coord.async_dispatch_ir_command(mode="display", display=turn_on, origin="IR Failover")
+                dispatched = await coord.async_dispatch_ir_command(mode="display", display=turn_on, origin="IR Failover")
+
+        if not dispatched:
+            if coord and prev_display is not None:
+                coord.state["display"] = prev_display
+                if hasattr(coord, "_notify_listeners"):
+                    coord._notify_listeners()
+            raise HomeAssistantError(f"Failed to set display switch to {turn_on} across configured transports")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._send_display_command(False)
@@ -206,10 +284,7 @@ class MirAIeDisplaySwitch(SwitchEntity):
             async_attach_blaster_listener(self, self.coordinator)
 
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -240,13 +315,7 @@ class MirAIeBuzzerSwitch(SwitchEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=getattr(getattr(self.device, "details", None), "brand", "Panasonic"),
-            model=getattr(getattr(self.device, "details", None), "model_number", ""),
-            sw_version=getattr(getattr(self.device, "details", None), "firmware_version", ""),
-        )
+        return build_device_info(self.device)
 
     @property
     def is_on(self) -> bool:
@@ -257,14 +326,8 @@ class MirAIeBuzzerSwitch(SwitchEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if cloud connection is online."""
-        has_cloud = bool(getattr(getattr(self.device, "status", None), "is_online", False))
-        coord = self.coordinator
-        if coord and hasattr(coord, "hub") and getattr(coord.hub, "broker", None):
-            broker = coord.hub.broker
-            if hasattr(broker, "connected") and not broker.connected.is_set():
-                has_cloud = False
-        return has_cloud
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, self.coordinator)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable buzzer sound."""
@@ -293,10 +356,7 @@ class MirAIeBuzzerSwitch(SwitchEntity):
             )
 
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -332,28 +392,13 @@ class MirAIeNanoeSwitch(SwitchEntity):
         """Return true if switch is on."""
         if self.coordinator and "nanoe" in self.coordinator.state:
             return bool(self.coordinator.state.get("nanoe"))
-        return getattr(self.device.status, "nanoe_mode", "off") == "on"
+        st = getattr(self.device, "status", None)
+        return getattr(st, "nanoe_mode", "off") == "on" if st else False
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available."""
-        coord = self.coordinator
-        has_wifi = getattr(coord, "has_wifi", True) if coord else True
-        has_cloud = bool(getattr(getattr(self.device, "status", None), "is_online", False))
-        if coord and hasattr(coord, "hub") and getattr(coord.hub, "broker", None):
-            broker = coord.hub.broker
-            if hasattr(broker, "connected") and not broker.connected.is_set():
-                has_cloud = False
-
-        blaster_id = coord.blaster_entity_id if coord else None
-        has_blaster = bool(blaster_id)
-        has_ir = bool(coord.is_ir_blaster_available) if (has_blaster and coord) else False
-
-        if has_blaster and has_wifi:
-            return has_cloud or has_ir
-        elif has_blaster and not has_wifi:
-            return has_ir
-        return has_cloud
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, self.coordinator)
 
     async def _send_nanoe_command(self, turn_on: bool) -> None:
         coord = self.coordinator
@@ -361,17 +406,35 @@ class MirAIeNanoeSwitch(SwitchEntity):
         broker = getattr(hub, "broker", None) if hub else None
         broker_connected = broker.connected.is_set() if (broker and hasattr(broker, "connected")) else True
         is_cloud_offline = (not getattr(getattr(self.device, "status", None), "is_online", True)) or (not broker_connected)
-        use_ir_first = (
-            coord and (
-                getattr(coord, "primary_backend", "cloud") == "ir"
-                or (is_cloud_offline and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None))
-            )
-        )
+        has_wifi = getattr(coord, "has_wifi", True) if coord else True
+        supports_udp = getattr(self.device, "supports_local_udp", False) is True
+        has_udp = supports_udp and getattr(self.device, "udp_transport", None) is not None
+        primary = getattr(coord, "primary_backend", "cloud") if coord else "cloud"
+        secondary = getattr(coord, "secondary_backend", None) if coord else None
+        submode = getattr(coord, "hybrid_submode", "auto") if coord else "auto"
+        blaster_id = getattr(coord, "blaster_entity_id", None) if coord else None
+
+        # Build candidate priority list (deduplicating while preserving order)
+        # In Manual Control, failover is disabled: limit to primary transport only
+        candidate_backends = [primary] if submode == "manual" else [primary, secondary]
+        order = []
+        for b in candidate_backends:
+            if b and b != "none" and b not in order:
+                order.append(b)
+
+        # Preserve legacy Cloud fallback for older IR-primary entries without explicit secondary backend
+        if submode != "manual" and primary == "ir" and not secondary and has_wifi and "cloud" not in order:
+            order.append("cloud")
+
+        first_transport = order[0] if order else "cloud"
+        origin_label = "Local UDP" if first_transport == "local_udp" else ("IR" if first_transport == "ir" else "Cloud")
+
+        prev_nanoe = coord.state.get("nanoe") if coord else None
 
         if coord:
             coord.async_optimistic_update(
                 nanoe=turn_on,
-                origin="IR" if use_ir_first else "Cloud",
+                origin=origin_label,
             )
             if hasattr(self, "async_write_ha_state"):
                 try:
@@ -379,22 +442,65 @@ class MirAIeNanoeSwitch(SwitchEntity):
                 except Exception:
                     pass
 
-        if use_ir_first and coord:
-            success = await coord.async_dispatch_ir_command(
-                nanoe=turn_on,
-                origin="IR Blaster" if getattr(coord, "primary_backend", "cloud") == "ir" else "IR Failover (Offline)",
-            )
-            if success:
-                return
-            LOGGER.warning("IR nanoe command failed for %s, falling back to Cloud", self.device.id)
+        dispatched = False
+        for transport in order:
+            if transport == "local_udp" and has_udp:
+                try:
+                    await self.device.set_nanoe(turn_on, transport="udp")
+                    if coord:
+                        coord.state["last_controlled_by"] = "Local UDP"
+                    dispatched = True
+                    break
+                except Exception as err:
+                    LOGGER.warning("Local UDP nanoe command failed for %s: %s", self.device.id, err)
+            elif transport == "cloud":
+                try:
+                    await self.device.set_nanoe(turn_on, transport="cloud")
+                    if coord:
+                        coord.state["last_controlled_by"] = "Cloud"
+                    dispatched = True
+                    break
+                except Exception as err:
+                    LOGGER.warning("Cloud nanoe command failed for %s: %s", self.device.id, err)
+            elif transport == "ir" and blaster_id:
+                # In failover mode, do not send Nanoe IR frames when AC is off;
+                # full frame transmission powers the AC on
+                if primary != "ir" and coord and coord.state.get("power") != "on":
+                    LOGGER.debug("Skipping IR failover nanoe command for %s: AC is powered off", self.device.id)
+                    continue
+                try:
+                    origin = "IR Blaster" if primary == "ir" else "IR Failover (Offline)"
+                    success = await coord.async_dispatch_ir_command(
+                        nanoe=turn_on,
+                        origin=origin,
+                    )
+                    if success:
+                        if coord:
+                            coord.state["last_controlled_by"] = "IR Blaster"
+                        dispatched = True
+                        break
+                    LOGGER.warning("IR nanoe command failed for %s", self.device.id)
+                except Exception as err:
+                    LOGGER.warning("IR nanoe command error for %s: %s", self.device.id, err)
 
-        try:
-            await self.device.set_nanoe(turn_on)
-        except Exception as err:
-            LOGGER.warning("Cloud nanoe command failed for %s: %s", self.device.id, err)
-            if coord and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None):
-                LOGGER.info("Auto Failover triggered: Transmitting IR nanoe command for %s", self.device.id)
-                await coord.async_dispatch_ir_command(nanoe=turn_on, origin="IR Failover")
+        if (
+            not dispatched
+            and coord
+            and submode == "auto"
+            and secondary != "none"
+            and blaster_id
+            and "ir" not in order
+            and coord.state.get("power") == "on"
+        ):
+            LOGGER.info("Auto Failover triggered: Transmitting IR nanoe command for %s", self.device.id)
+            dispatched = await coord.async_dispatch_ir_command(nanoe=turn_on, origin="IR Failover")
+
+        if not dispatched:
+            if coord and prev_nanoe is not None:
+                coord.state["nanoe"] = prev_nanoe
+                if hasattr(coord, "_notify_listeners"):
+                    coord._notify_listeners()
+            raise HomeAssistantError(f"Failed to set Nanoe state to {turn_on} across configured transports")
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         await self._send_nanoe_command(False)
@@ -412,10 +518,7 @@ class MirAIeNanoeSwitch(SwitchEntity):
             async_attach_blaster_listener(self, self.coordinator)
 
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -431,6 +534,7 @@ class MirAIeNanoeSwitch(SwitchEntity):
 from homeassistant.helpers.restore_state import RestoreEntity
 from .const import (
     CONF_PRIMARY_BACKEND,
+    CONF_SECONDARY_BACKEND,
     CONF_HYBRID_SUBMODE,
 )
 
@@ -453,12 +557,7 @@ class MirAIeHybridSubmodeSwitch(SwitchEntity, RestoreEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-        )
+        return build_device_info(self.device)
 
     @property
     def is_on(self) -> bool:
@@ -481,11 +580,15 @@ class MirAIeHybridSubmodeSwitch(SwitchEntity, RestoreEntity):
         self.coordinator.hybrid_submode = "auto"
         self._persist_option(CONF_HYBRID_SUBMODE, "auto")
         self.async_write_ha_state()
+        if hasattr(self.coordinator, "_notify_listeners"):
+            self.coordinator._notify_listeners()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         self.coordinator.hybrid_submode = "manual"
         self._persist_option(CONF_HYBRID_SUBMODE, "manual")
         self.async_write_ha_state()
+        if hasattr(self.coordinator, "_notify_listeners"):
+            self.coordinator._notify_listeners()
 
     async def async_added_to_hass(self) -> None:
         """Restore state and subscribe to coordinator state updates."""
@@ -512,19 +615,22 @@ class MirAIeBackendSelectSwitch(SwitchEntity, RestoreEntity):
 
     @property
     def icon(self) -> str:
-        return "mdi:cloud-sync" if self.is_on else "mdi:remote"
+        primary = getattr(self.coordinator, "primary_backend", "cloud")
+        if primary == "local_udp":
+            return "mdi:lan-connect"
+        if primary == "ir":
+            return "mdi:remote"
+        return "mdi:cloud-sync"
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-        )
+        return build_device_info(self.device)
 
     @property
     def is_on(self) -> bool:
+        has_udp = bool(getattr(self.coordinator, "has_udp", False))
+        if has_udp:
+            return self.coordinator.primary_backend == "local_udp"
         return self.coordinator.primary_backend == "cloud"
 
     def _persist_option(self, option_key: str, option_val: str) -> None:
@@ -545,18 +651,38 @@ class MirAIeBackendSelectSwitch(SwitchEntity, RestoreEntity):
             self.coordinator.hybrid_submode = "manual"
             self._persist_option(CONF_HYBRID_SUBMODE, "manual")
             LOGGER.info("External touch on backend switch: Flipped hybrid mode to Manual for %s", self.device.id)
-        self.coordinator.primary_backend = "cloud"
-        self._persist_option(CONF_PRIMARY_BACKEND, "cloud")
+        has_udp = bool(getattr(self.coordinator, "has_udp", False))
+        target_backend = "local_udp" if has_udp else "cloud"
+        former_primary = self.coordinator.primary_backend
+        current_secondary = getattr(self.coordinator, "secondary_backend", None)
+        self.coordinator.primary_backend = target_backend
+        self._persist_option(CONF_PRIMARY_BACKEND, target_backend)
+        if target_backend == current_secondary and former_primary and former_primary != target_backend and current_secondary != "none":
+            self.coordinator.secondary_backend = former_primary
+            self._persist_option(CONF_SECONDARY_BACKEND, former_primary)
         self.async_write_ha_state()
+        if hasattr(self.coordinator, "_notify_listeners"):
+            self.coordinator._notify_listeners()
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         if self.coordinator.hybrid_submode == "auto":
             self.coordinator.hybrid_submode = "manual"
             self._persist_option(CONF_HYBRID_SUBMODE, "manual")
             LOGGER.info("External touch on backend switch: Flipped hybrid mode to Manual for %s", self.device.id)
-        self.coordinator.primary_backend = "ir"
-        self._persist_option(CONF_PRIMARY_BACKEND, "ir")
+        has_udp = bool(getattr(self.coordinator, "has_udp", False))
+        hub = getattr(self.coordinator, "hub", None)
+        has_cloud = bool(hub and getattr(hub, "broker", None))
+        target_backend = "cloud" if (has_udp and has_cloud) else "ir"
+        former_primary = self.coordinator.primary_backend
+        current_secondary = getattr(self.coordinator, "secondary_backend", None)
+        self.coordinator.primary_backend = target_backend
+        self._persist_option(CONF_PRIMARY_BACKEND, target_backend)
+        if target_backend == current_secondary and former_primary and former_primary != target_backend and current_secondary != "none":
+            self.coordinator.secondary_backend = former_primary
+            self._persist_option(CONF_SECONDARY_BACKEND, former_primary)
         self.async_write_ha_state()
+        if hasattr(self.coordinator, "_notify_listeners"):
+            self.coordinator._notify_listeners()
 
     async def async_added_to_hass(self) -> None:
         """Restore state and subscribe to coordinator state updates."""

@@ -33,6 +33,13 @@ from .const import (
     CONF_IR_FORMAT,
     CONF_PRIMARY_BACKEND,
     CONF_HYBRID_SUBMODE,
+    CONF_DEVICE_IP,
+    CONF_CONTROLLER_ID,
+    CONF_UDP_CONTROL_KEY,
+    CONF_UDP_CONTROL_IV,
+    CONF_SETUP_MODE,
+    SETUP_MODE_CLOUD,
+    DEFAULT_CONTROLLER_ID,
     DOMAIN,
     SWING_V_MAP,
     SWING_H_MAP,
@@ -53,10 +60,11 @@ PLATFORMS: list[Platform] = [
     Platform.SWITCH,
     Platform.BUTTON,
     Platform.BINARY_SENSOR,
+    Platform.SELECT,
 ]
 
 # Mapping of entity-domain prefixes that appear in old-format unique_ids.
-_OLD_UID_PREFIXES = ("sensor.", "switch.", "button.", "binary_sensor.")
+_OLD_UID_PREFIXES = ("sensor.", "switch.", "button.", "binary_sensor.", "select.")
 
 
 def _migrate_unique_ids(
@@ -203,42 +211,92 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if is_ir_only or not has_username:
         hub = MirAIeHub()
         hub.home = type("Home", (), {"devices": []})()
-        dev_id = entry.unique_id or f"manual_{entry.entry_id}"
+        dev_id = entry_data.get("device_id") or entry.unique_id or f"manual_{entry.entry_id}"
         model_code = entry.data.get("model_code", "CS-CU-RU18CKY-1")
         name = entry.data.get("name", entry.title)
 
-        dummy_dev = type("Device", (), {
-            "id": dev_id,
-            "friendly_name": name,
-            "details": type("Details", (), {"model_number": model_code, "brand": "Panasonic", "firmware_version": "IR-1.0", "has_wifi": not is_ir_only})(),
-            "status": type("Status", (), {
-                "is_online": True,
-                "power_mode": type("Pwr", (), {"value": "off"})(),
-                "hvac_mode": type("Md", (), {"value": "cool"})(),
-                "temperature": 24,
-                "room_temperature": None,
-                "fan_mode": type("Fn", (), {"value": "auto"})(),
-                "v_swing_mode": type("Vs", (), {"value": 0})(),
-                "h_swing_mode": type("Hs", (), {"value": 0})(),
-                "converti_mode": type("Cv", (), {"value": 0})(),
-                "preset_mode": type("Pr", (), {"value": "none"})(),
-            })(),
-            "register_callback": lambda *args, **kwargs: None,
-            "remove_callback": lambda *args, **kwargs: None,
-            "close": lambda *args, **kwargs: None,
-            "refresh": lambda *args, **kwargs: None,
-            "turn_on": _dummy_async_coro,
-            "turn_off": _dummy_async_coro,
-            "set_temperature": _dummy_async_coro,
-            "set_hvac_mode": _dummy_async_coro,
-            "set_fan_mode": _dummy_async_coro,
-            "set_v_swing_mode": _dummy_async_coro,
-            "set_h_swing_mode": _dummy_async_coro,
-            "set_preset_mode": _dummy_async_coro,
-            "set_converti_mode": _dummy_async_coro,
-            "set_display_mode": _dummy_async_coro,
-            "set_nanoe": _dummy_async_coro,
-        })()
+        if entry_data.get("udp_control_key") and entry_data.get("udp_control_iv"):
+            from miraie_ac.device import (
+                Device,
+                DeviceDetails,
+                DeviceStatus,
+                PowerMode,
+                FanMode,
+                SwingMode,
+                DisplayMode,
+                HVACMode,
+                PresetMode,
+                ConvertiMode,
+            )
+            details = DeviceDetails(
+                model_name=model_code,
+                mac_address=entry.data.get("device_mac", ""),
+                category="AC",
+                brand="Panasonic",
+                firmware_version="3.02",
+                serial_number="",
+                model_number=model_code,
+                product_serial_number="",
+                udp_control_key=entry.data.get("udp_control_key"),
+                udp_control_iv=entry.data.get("udp_control_iv"),
+            )
+            details.ip_address = entry.data.get("device_ip")
+            dummy_dev = Device(
+                id=dev_id,
+                name=name,
+                friendly_name=name,
+                control_topic="",
+                status_topic="",
+                connection_status_topic="",
+                broker=None,
+            )
+            dummy_dev.details = details
+            dummy_dev.status = DeviceStatus(
+                is_online=True,
+                temperature=24.0,
+                room_temperature=26.0,
+                power_mode=PowerMode("off"),
+                fan_mode=FanMode("auto"),
+                v_swing_mode=SwingMode(0),
+                h_swing_mode=SwingMode(0),
+                display_mode=DisplayMode("on"),
+                hvac_mode=HVACMode("cool"),
+                preset_mode=PresetMode("none"),
+                converti_mode=ConvertiMode(0),
+            )
+        else:
+            dummy_dev = type("Device", (), {
+                "id": dev_id,
+                "friendly_name": name,
+                "details": type("Details", (), {"model_number": model_code, "brand": "Panasonic", "firmware_version": "IR-1.0", "has_wifi": not is_ir_only})(),
+                "status": type("Status", (), {
+                    "is_online": True,
+                    "power_mode": type("Pwr", (), {"value": "off"})(),
+                    "hvac_mode": type("Md", (), {"value": "cool"})(),
+                    "temperature": 24,
+                    "room_temperature": None,
+                    "fan_mode": type("Fn", (), {"value": "auto"})(),
+                    "v_swing_mode": type("Vs", (), {"value": 0})(),
+                    "h_swing_mode": type("Hs", (), {"value": 0})(),
+                    "converti_mode": type("Cv", (), {"value": 0})(),
+                    "preset_mode": type("Pr", (), {"value": "none"})(),
+                })(),
+                "register_callback": lambda *args, **kwargs: None,
+                "remove_callback": lambda *args, **kwargs: None,
+                "close": lambda *args, **kwargs: None,
+                "refresh": lambda *args, **kwargs: None,
+                "turn_on": _dummy_async_coro,
+                "turn_off": _dummy_async_coro,
+                "set_temperature": _dummy_async_coro,
+                "set_hvac_mode": _dummy_async_coro,
+                "set_fan_mode": _dummy_async_coro,
+                "set_v_swing_mode": _dummy_async_coro,
+                "set_h_swing_mode": _dummy_async_coro,
+                "set_preset_mode": _dummy_async_coro,
+                "set_converti_mode": _dummy_async_coro,
+                "set_display_mode": _dummy_async_coro,
+                "set_nanoe": _dummy_async_coro,
+            })()
         hub.home.devices = [dummy_dev]
     else:
         sessions = hass.data.setdefault(DOMAIN, {}).setdefault("sessions", {})
@@ -470,14 +528,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     _cleanup_cross_device_entities(hass, entry, target_dev_id)
 
 
-    # Start Local UDP Transport Singleton if not already running
-    udp_manager = LocalUdpTransportManager.get_instance()
-    if not udp_manager.is_running:
-        try:
-            await udp_manager.start()
-            LOGGER.info("MirAIe Local UDP Transport Manager started on port 5002")
-        except Exception as udp_start_err:
-            LOGGER.warning("Could not start MirAIe Local UDP Transport: %s", udp_start_err)
+    # Start Local UDP Transport Singleton if not already running (excluded for Cloud-Only and IR-Only)
+    udp_manager: LocalUdpTransportManager | None = None
+    entry_setup_mode = entry.options.get(CONF_SETUP_MODE) or entry.data.get(CONF_SETUP_MODE)
+    if entry_setup_mode != SETUP_MODE_CLOUD and not is_ir_only:
+        udp_manager = LocalUdpTransportManager.get_instance()
+        if not udp_manager.is_running:
+            try:
+                await udp_manager.start()
+                LOGGER.info("MirAIe Local UDP Transport Manager started on port 5002")
+            except Exception as udp_start_err:
+                LOGGER.warning("Could not start MirAIe Local UDP Transport: %s", udp_start_err)
 
     for device in target_devices:
         dev_opt = devices_opt.get(device.id, {})
@@ -497,19 +558,66 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         model_code = dev_opt.get("model_code") or entry.options.get("model_code") or entry.data.get("model_code") or getattr(getattr(device, "details", None), "model_number", "") or ""
 
-        # Attach UDP Transport to device if supported
-        dt = getattr(device, "details", None)
-        udp_key = getattr(dt, "udp_control_key", None) or entry.data.get("udp_control_key")
-        udp_iv = getattr(dt, "udp_control_iv", None) or entry.data.get("udp_control_iv")
-        dev_ip = getattr(dt, "ip_address", None) or entry.data.get("device_ip")
+        # Attach UDP Transport to device if supported (strictly excluded for Cloud-Only setup mode)
+        setup_mode = dev_opt.get(CONF_SETUP_MODE) or entry.options.get(CONF_SETUP_MODE) or entry.data.get(CONF_SETUP_MODE)
+        is_cloud_only = (setup_mode == SETUP_MODE_CLOUD)
 
-        if udp_key and udp_iv and dt:
+        dt = getattr(device, "details", None)
+        udp_key = (
+            dev_opt.get(CONF_UDP_CONTROL_KEY)
+            or entry.options.get(CONF_UDP_CONTROL_KEY)
+            or getattr(dt, "udp_control_key", None)
+            or entry.data.get("udp_control_key")
+        )
+        udp_iv = (
+            dev_opt.get(CONF_UDP_CONTROL_IV)
+            or entry.options.get(CONF_UDP_CONTROL_IV)
+            or getattr(dt, "udp_control_iv", None)
+            or entry.data.get("udp_control_iv")
+        )
+        if is_cloud_only:
+            udp_key = None
+            udp_iv = None
+        dev_ip = (
+            dev_opt.get(CONF_DEVICE_IP)
+            or entry.options.get(CONF_DEVICE_IP)
+            or entry.data.get("device_ip")
+            or getattr(dt, "ip_address", None)
+        )
+        controller_id = (
+            dev_opt.get(CONF_CONTROLLER_ID)
+            or entry.options.get(CONF_CONTROLLER_ID)
+            or entry.data.get(CONF_CONTROLLER_ID)
+            or DEFAULT_CONTROLLER_ID
+        )
+        setattr(device, "controller_id", controller_id)
+
+        if udp_key and udp_iv and dt and udp_manager:
             dt.udp_control_key = udp_key
             dt.udp_control_iv = udp_iv
             if dev_ip:
                 dt.ip_address = dev_ip
             if hasattr(device, "attach_udp_transport"):
                 device.attach_udp_transport(udp_manager)
+            if dev_ip:
+                udp_manager.set_device_ip(device.id, dev_ip)
+                LOGGER.info("Registered Local UDP IP %s for device %s (cnt=%s)", dev_ip, device.id, controller_id)
+
+            if hasattr(device, "send_udp_command"):
+                async def _initial_udp_query(dev=device, ctrl=controller_id) -> None:
+                    try:
+                        try:
+                            await dev.send_udp_command({"ps": "query"}, controller=ctrl)
+                        except TypeError:
+                            await dev.send_udp_command({"ps": "query"})
+                        LOGGER.info("Initial UDP query probe successful for device %s", dev.id)
+                    except Exception as query_err:
+                        LOGGER.debug("Initial UDP query probe deferred for device %s: %s", dev.id, query_err)
+
+                if hasattr(entry, "async_create_background_task"):
+                    entry.async_create_background_task(hass, _initial_udp_query(), f"miraie_udp_query_{device.id}")
+                else:
+                    hass.async_create_task(_initial_udp_query())
 
         coordinator = MirAIeDeviceCoordinator(
             hass=hass,
@@ -527,6 +635,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             tertiary_backend=tertiary,
             hybrid_submode=submode,
             ir_format=ir_fmt,
+            controller_id=controller_id,
             lookup=lookup,
             device=device,
         )
@@ -731,6 +840,8 @@ def _make_cloud_cb(hass: HomeAssistant, coord: MirAIeDeviceCoordinator, dev: Any
             nanoe_val = getattr(status_obj, "nanoe_mode", "off")
             disp_obj = getattr(status_obj, "display_mode", None)
             disp_val = disp_obj.value if disp_obj and hasattr(disp_obj, "value") else disp_obj
+            norm_disp = str(disp_val).lower().strip() if disp_val is not None else "off"
+            acdc_val = norm_disp if norm_disp in ("night", "on", "off") else ("on" if norm_disp in ("1", "true") else "off")
 
             power_obj = getattr(status_obj, "power_mode", None)
             power_val = power_obj.value if power_obj and hasattr(power_obj, "value") else power_obj
@@ -748,7 +859,7 @@ def _make_cloud_cb(hass: HomeAssistant, coord: MirAIeDeviceCoordinator, dev: Any
                 "achs": SWING_H_MAP.get(h_val, H0) if h_val is not None else None,
                 "acec": "on" if preset_val == "eco" else "off",
                 "acngs": "on" if str(nanoe_val).lower() in ("on", "1", "true") else "off",
-                "acdc": "on" if str(disp_val).lower() in ("on", "1", "true") else "off",
+                "acdc": acdc_val,
                 "bzr": "on" if getattr(status_obj, "buzzer", False) else "off",
                 "errors": getattr(status_obj, "error_code", ""),
                 "warnings": getattr(status_obj, "warning_code", ""),

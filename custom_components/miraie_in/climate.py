@@ -63,7 +63,14 @@ from .const import (
 
 
 from .logger import LOGGER
-from .utils import get_devices_for_entry, async_attach_blaster_listener, is_ir_only_entry
+from .utils import (
+    get_devices_for_entry,
+    async_attach_blaster_listener,
+    is_ir_only_entry,
+    safe_async_write_ha_state,
+    is_device_available,
+    build_device_info,
+)
 
 PARALLEL_UPDATES = 0
 _HAS_NATIVE_TEMPERATURE = hasattr(ClimateEntity, "native_temperature_unit")
@@ -100,20 +107,33 @@ class MirAIeClimate(ClimateEntity):
         has_h_vane = True
         converti_presets = get_converti_preset_modes(model_number)
 
+        if coordinator and hasattr(coordinator, "capabilities") and coordinator.capabilities and "h_vane_enabled" in coordinator.capabilities:
+            has_h_vane = bool(coordinator.capabilities.get("h_vane_enabled"))
+        elif getattr(device, "supports_horizontal_swing", None) is True:
+            has_h_vane = True
+        elif getattr(device, "supports_horizontal_swing", None) is False:
+            has_h_vane = False
+
+        if coordinator and hasattr(coordinator, "capabilities") and coordinator.capabilities and "converti_type" in coordinator.capabilities:
+            caps = coordinator.capabilities
+            c_tier = str(caps.get("converti_type"))
+            if c_tier == "none":
+                converti_presets = []
+            elif c_tier == "8-in-1":
+                converti_presets = list(CONVERTI_8IN1_PRESET_MODES)
+            elif c_tier == "7-in-1":
+                converti_presets = list(CONVERTI_7IN1_PRESET_MODES)
+        elif getattr(device, "supports_convertible", None) is False:
+            converti_presets = []
+        elif getattr(device, "convertible_profile_name", None) == "Converti8":
+            converti_presets = list(CONVERTI_8IN1_PRESET_MODES)
+        elif getattr(device, "convertible_profile_name", None) in ("Converti7", "Converti4"):
+            converti_presets = list(CONVERTI_7IN1_PRESET_MODES)
+
         if coordinator and hasattr(coordinator, "capabilities") and coordinator.capabilities:
             caps = coordinator.capabilities
             if "has_heat_mode" in caps:
                 has_heat = bool(caps["has_heat_mode"])
-            if "h_vane_enabled" in caps:
-                has_h_vane = bool(caps["h_vane_enabled"])
-            if "converti_type" in caps:
-                c_tier = str(caps["converti_type"])
-                if c_tier == "none":
-                    converti_presets = []
-                elif c_tier == "8-in-1":
-                    converti_presets = list(CONVERTI_8IN1_PRESET_MODES)
-                elif c_tier == "7-in-1":
-                    converti_presets = list(CONVERTI_7IN1_PRESET_MODES)
 
         self._attr_hvac_modes = [
             HVACMode.AUTO,
@@ -161,7 +181,7 @@ class MirAIeClimate(ClimateEntity):
         self._attr_supported_features = features
         self._attr_max_temp = 30.0
         self._attr_min_temp = 16.0
-        self._attr_target_temperature_step = 1.0
+        self._attr_target_temperature_step = getattr(device, "target_temperature_step", 1.0)
         self._enable_turn_on_off_backwards_compatibility = False
         if _HAS_NATIVE_TEMPERATURE:
             self._attr_native_temperature_unit = UnitOfTemperature.CELSIUS
@@ -187,7 +207,7 @@ class MirAIeClimate(ClimateEntity):
     ) -> None:
         """Route command through Hybrid Coordinator based on decoupled transport priorities.
 
-        Strictly respects Primary -> Secondary -> Tertiary order. If UDP is primary
+        Strictly respects Primary -> Secondary failover order. If UDP is primary
         and IR is secondary, Cloud MQTT is never touched upon failure.
         """
         coord = getattr(self, "coordinator", None)
@@ -198,12 +218,11 @@ class MirAIeClimate(ClimateEntity):
 
         primary = getattr(coord, "primary_backend", "cloud") if coord else "cloud"
         secondary = getattr(coord, "secondary_backend", None) if coord else None
-        tertiary = getattr(coord, "tertiary_backend", None) if coord else None
 
         # Build candidate priority list (deduplicating while preserving order)
         order = []
-        for b in [primary, secondary, tertiary]:
-            if b and b not in order:
+        for b in [primary, secondary]:
+            if b and b != "none" and b not in order:
                 order.append(b)
 
         # Preserve legacy Cloud fallback for older IR-primary entries without explicit secondary backend
@@ -270,9 +289,13 @@ class MirAIeClimate(ClimateEntity):
                     cmd.update({"acem": "on" if eco else "off"})
                 if nanoe is not None:
                     cmd.update({"acng": "on" if nanoe else "off"})
+            ctrl = getattr(coord, "controller_id", "ha") if coord else "ha"
             try:
-                LOGGER.info("Device %s: Dispatching command via Local UDP: %s", self.device.id, cmd)
-                res = await self.device.send_udp_command(cmd)
+                LOGGER.info("Device %s: Dispatching command via Local UDP: %s (cnt=%s)", self.device.id, cmd, ctrl)
+                try:
+                    res = await self.device.send_udp_command(cmd, controller=ctrl)
+                except TypeError:
+                    res = await self.device.send_udp_command(cmd)
                 LOGGER.debug("Device %s: Local UDP command succeeded: %s", self.device.id, res)
                 return True
             except Exception as err:
@@ -329,7 +352,7 @@ class MirAIeClimate(ClimateEntity):
                     if coord:
                         coord.state["last_controlled_by"] = "Cloud"
                     return
-                elif getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None) and "ir" not in order[idx+1:]:
+                elif secondary != "none" and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None) and "ir" not in order[idx+1:]:
                     # Proactive offline failover to IR if Cloud fails/offline and IR is not explicitly ordered next
                     if await _try_ir("IR Failover (Offline)"):
                         return
@@ -354,16 +377,7 @@ class MirAIeClimate(ClimateEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                # Serial numbers are unique identifiers within a specific domain
-                (DOMAIN, self.device.id)
-            },
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     @property
     def assumed_state(self) -> bool:
@@ -377,29 +391,42 @@ class MirAIeClimate(ClimateEntity):
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available.
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, getattr(self, "coordinator", None))
 
-        Dual-control (Wi-Fi + IR Blaster): Available if EITHER channel is online.
-        Only transitions to unavailable when BOTH channels are unavailable.
-        Single-control (Wi-Fi only or IR only): Available only if its sole channel is online.
-        """
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return device-specific attributes including transport status."""
         coord = getattr(self, "coordinator", None)
-        has_wifi = getattr(coord, "has_wifi", True) if coord else True
-        has_cloud = bool(getattr(getattr(self.device, "status", None), "is_online", False))
-        if coord and hasattr(coord, "hub") and getattr(coord.hub, "broker", None):
-            broker = coord.hub.broker
-            if hasattr(broker, "connected") and not broker.connected.is_set():
-                has_cloud = False
+        attrs: dict[str, Any] = {}
+        raw_mac = getattr(getattr(self.device, "details", None), "mac_address", None)
+        if not raw_mac and coord and getattr(coord, "entry_id", None):
+            entry = self.hass.config_entries.async_get_entry(coord.entry_id) if hasattr(self, "hass") and self.hass else None
+            if entry:
+                raw_mac = entry.data.get("device_mac")
+        if raw_mac:
+            clean_mac = str(raw_mac).strip().replace(":", "").replace("-", "").upper()
+            if len(clean_mac) == 12:
+                attrs["mac_address"] = ":".join(clean_mac[i:i+2] for i in range(0, 12, 2))
 
-        blaster_id = coord.blaster_entity_id if coord else None
-        has_blaster = bool(blaster_id)
-        has_ir = bool(coord.is_ir_blaster_available) if (has_blaster and coord) else False
-
-        if has_blaster and has_wifi:
-            return has_cloud or has_ir
-        elif has_blaster and not has_wifi:
-            return has_ir
-        return has_cloud
+        if coord:
+            attrs["primary_backend"] = getattr(coord, "primary_backend", "cloud")
+            attrs["secondary_backend"] = getattr(coord, "secondary_backend", "none") or "none"
+            attrs["hybrid_submode"] = getattr(coord, "hybrid_submode", "auto")
+            attrs["last_controlled_by"] = coord.state.get("last_controlled_by")
+            attrs["controller_id"] = getattr(coord, "controller_id", "ha")
+            attrs["has_udp"] = bool(getattr(coord, "has_udp", False))
+            attrs["cloud_mqtt_connected"] = bool(getattr(coord, "cloud_mqtt_connected", False))
+            attrs["ir_blaster_available"] = bool(getattr(coord, "ir_blaster_available", False))
+        else:
+            entry = getattr(self, "entry", None)
+            if entry:
+                entry_data = getattr(entry, "data", {})
+                attrs["primary_backend"] = entry_data.get("primary_backend", "cloud")
+                attrs["secondary_backend"] = entry_data.get("secondary_backend", "none")
+                attrs["hybrid_submode"] = entry_data.get("hybrid_submode", "auto")
+                attrs["controller_id"] = entry_data.get("controller_id", "ha")
+        return attrs
 
     @property
     def hvac_mode(self) -> HVACMode | None:
@@ -418,11 +445,12 @@ class MirAIeClimate(ClimateEntity):
             except ValueError:
                 return HVACMode.COOL
 
-        power_mode = self.device.status.power_mode
-        if power_mode.value == "off":
+        power_mode = getattr(getattr(self.device, "status", None), "power_mode", None)
+        if power_mode and power_mode.value == "off":
             return HVACMode.OFF
 
-        mode = self.device.status.hvac_mode.value
+        st = getattr(self.device, "status", None)
+        mode = getattr(getattr(st, "hvac_mode", None), "value", "cool") if st else "cool"
 
         if mode == "fan":
             return HVACMode.FAN_ONLY
@@ -465,11 +493,17 @@ class MirAIeClimate(ClimateEntity):
         return getattr(getattr(self, "device", None), "status", None) and getattr(self.device.status, "room_temperature", None)
 
     @property
+    def target_temperature_step(self) -> float:
+        """Return the supported target temperature step."""
+        return getattr(self.device, "target_temperature_step", self._attr_target_temperature_step)
+
+    @property
     def native_target_temperature(self) -> float | int | None:
         coord = getattr(self, "coordinator", None)
         if coord and coord.state and "temperature" in coord.state:
             return round(coord.state["temperature"])
-        temp = self.device.status.temperature
+        st = getattr(self.device, "status", None)
+        temp = getattr(st, "temperature", None) if st else None
         if temp is None:
             return None
         return round(temp)
@@ -538,7 +572,8 @@ class MirAIeClimate(ClimateEntity):
         if coord and coord.state and "fan_speed" in coord.state:
             return coord.state["fan_speed"]
 
-        return self.device.status.fan_mode.value
+        st = getattr(self.device, "status", None)
+        return getattr(getattr(st, "fan_mode", None), "value", "auto") if st else "auto"
 
     @property
     def swing_mode(self) -> str | None:
@@ -547,7 +582,8 @@ class MirAIeClimate(ClimateEntity):
             v_val = coord.state["v_vane"]
             return SWING_CODE_TO_V_FRIENDLY.get(v_val, str(v_val))
 
-        mode = self.device.status.v_swing_mode.value
+        st = getattr(self.device, "status", None)
+        mode = getattr(getattr(st, "v_swing_mode", None), "value", V0) if st else V0
         return SWING_CODE_TO_V_FRIENDLY.get(mode, SWING_CODE_TO_V_FRIENDLY.get(V0, SWING_AUTO))
 
     @property
@@ -557,7 +593,8 @@ class MirAIeClimate(ClimateEntity):
             h_val = coord.state["h_vane"]
             return SWING_CODE_TO_H_FRIENDLY.get(h_val, str(h_val))
 
-        mode = self.device.status.h_swing_mode.value
+        st = getattr(self.device, "status", None)
+        mode = getattr(getattr(st, "h_swing_mode", None), "value", H0) if st else H0
         return SWING_CODE_TO_H_FRIENDLY.get(mode, SWING_CODE_TO_H_FRIENDLY.get(H0, SWING_AUTO))
 
 
@@ -588,10 +625,12 @@ class MirAIeClimate(ClimateEntity):
         # Update optimistic UI state immediately for instant response
         coord = getattr(self, "coordinator", None)
         if coord:
+            primary = getattr(coord, "primary_backend", "cloud")
+            origin_label = "Local UDP" if primary == "local_udp" else ("IR" if primary == "ir" else "Cloud")
             coord.async_optimistic_update(
                 target_temp=target_temp,
                 eco=False if is_eco_active else None,
-                origin="IR" if getattr(coord, "primary_backend", "cloud") == "ir" else "Cloud",
+                origin=origin_label,
             )
             if hasattr(self, "async_write_ha_state"):
                 try:
@@ -800,10 +839,7 @@ class MirAIeClimate(ClimateEntity):
             async_attach_blaster_listener(self, self.coordinator)
 
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)

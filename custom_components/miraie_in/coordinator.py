@@ -83,6 +83,7 @@ class MirAIeDeviceCoordinator:
         temperature_sensor_entity_id: Optional[str] = None,
         availability_entity_id: Optional[str] = None,
         ir_format: str = "auto",
+        controller_id: str = "ha",
         lookup=None,
         subentry_id: Optional[str] = None,  # Backward-compatible alias
         availability_topic: Optional[str] = None,
@@ -110,6 +111,9 @@ class MirAIeDeviceCoordinator:
         self.availability_entity_id = availability_entity_id
         self.availability_topic = availability_topic
         self.ir_format = ir_format
+        self.controller_id = controller_id
+        if self.device:
+            setattr(self.device, "controller_id", self.controller_id)
         self.hub: Any = None
         self._unsub_receiver: Optional[Callable[[], None]] = None
         self._unsub_native_receiver: Optional[Callable[[], None]] = None
@@ -131,9 +135,13 @@ class MirAIeDeviceCoordinator:
         self.model_capabilities: Dict[str, Any] = {}
 
         # State storage
-        # For cloud-capable Wi-Fi devices, always start as Cloud even if an IR blaster is also configured.
-        # "IR Blaster" / "IR Remote" are set at runtime when a command or physical press is detected.
-        init_origin = "Cloud" if self.has_wifi else "IR Blaster"
+        # Determine initial control source based on configured transport
+        if self.primary_backend == "local_udp":
+            init_origin = "Local UDP"
+        elif self.has_wifi:
+            init_origin = "Cloud"
+        else:
+            init_origin = "IR Blaster"
         self.state: Dict[str, Any] = {
             "power": "off",
             "mode": "cool",
@@ -169,6 +177,16 @@ class MirAIeDeviceCoordinator:
         self._last_ir_command_source: str = "Init"
         self._last_requested_ir_params: Optional[Dict[str, Any]] = None
         self._listeners: list[Callable[[], None]] = []
+
+    @property
+    def has_udp(self) -> bool:
+        """Return True if local UDP transport is active on this device."""
+        if not self.device:
+            return False
+        return bool(
+            getattr(self.device, "supports_local_udp", False)
+            and getattr(self.device, "udp_transport", None)
+        )
 
     @property
     def is_esphome_2026_10_or_newer(self) -> bool:
@@ -272,7 +290,8 @@ class MirAIeDeviceCoordinator:
             if not in_ir_grace_window or new_power == self.state.get("power"):
                 self.state["power"] = new_power
         if "acdc" in cloud_data:
-            new_disp = "on" if str(cloud_data["acdc"]).lower() in ["on", "1", "true"] else "off"
+            acdc_str = str(cloud_data["acdc"]).lower().strip()
+            new_disp = acdc_str if acdc_str in ("night", "on", "off") else ("on" if acdc_str in ("1", "true") else "off")
             if not in_ir_grace_window or new_disp == self.state.get("display"):
                 self.state["display"] = new_disp
         if "md" in cloud_data:
@@ -341,13 +360,20 @@ class MirAIeDeviceCoordinator:
         if "acfc" in cloud_data:
             self.state["filter_clean_alert"] = str(cloud_data["acfc"]).lower() in ["on", "1", "true"]
 
-        # Origin tracking: preserve "IR" origins during active IR control
+        # Origin tracking: preserve "IR" and "Local UDP" origins during active control and verification
         if not in_ir_grace_window:
             if "pwr" in cloud_data or "md" in cloud_data or "tset" in cloud_data:
-                self._last_ir_command_source = "Cloud"
                 self._last_requested_ir_params = None
-            if self.state.get("last_controlled_by") not in ("IR Blaster", "IR Remote", "IR Failover", "IR Failover (Offline)"):
-                self.state["last_controlled_by"] = "Cloud"
+            default_origin = "Local UDP" if self.primary_backend == "local_udp" else "Cloud"
+            current_origin = self.state.get("last_controlled_by")
+            # If current origin was set by an IR command, background telemetry verifies state without changing origin
+            if current_origin not in ("IR Blaster", "IR Remote", "IR Failover", "IR Failover (Offline)"):
+                if "pwr" in cloud_data or "md" in cloud_data or "tset" in cloud_data:
+                    self._last_ir_command_source = default_origin
+                if self.primary_backend == "local_udp" or current_origin == "Local UDP":
+                    self.state["last_controlled_by"] = "Local UDP"
+                else:
+                    self.state["last_controlled_by"] = "Cloud"
 
         self.state["provisional"] = False
         self.device_online = True
@@ -650,7 +676,7 @@ class MirAIeDeviceCoordinator:
         h_vane: Optional[str] = None,
         eco: Optional[bool] = None,
         nanoe: Optional[bool] = None,
-        display: Optional[bool] = None,
+        display: bool | str | None = None,
         preset: Optional[str] = None,
         origin: str = "Cloud",
     ) -> None:
@@ -759,7 +785,14 @@ class MirAIeDeviceCoordinator:
         if nanoe is not None:
             self.state["nanoe"] = nanoe
         if display is not None:
-            self.state["display"] = "on" if display else "off"
+            if isinstance(display, str):
+                norm_d = display.strip().lower()
+                if norm_d in ("night", "on", "off"):
+                    self.state["display"] = norm_d
+                else:
+                    self.state["display"] = "on" if norm_d in ("true", "1") else "off"
+            else:
+                self.state["display"] = "on" if display else "off"
         self.state["last_controlled_by"] = origin
         self.state["provisional"] = True
 
@@ -1284,8 +1317,14 @@ class MirAIeDeviceCoordinator:
         device = getattr(self, "device", None)
         if device and getattr(device, "supports_local_udp", False) and getattr(device, "udp_transport", None):
             try:
-                LOGGER.debug("Device %s: Verifying IR blast state via ~20ms Local UDP query", self.device_id)
-                res = await device.send_udp_command({"ps": "query"})
+                LOGGER.debug("Device %s: Verifying IR blast state via ~20ms Local UDP query (cnt=%s)", self.device_id, self.controller_id)
+                if self.controller_id and self.controller_id != "ha":
+                    try:
+                        res = await device.send_udp_command({"ps": "query"}, controller=self.controller_id)
+                    except TypeError:
+                        res = await device.send_udp_command({"ps": "query"})
+                else:
+                    res = await device.send_udp_command({"ps": "query"})
                 LOGGER.debug("Device %s: Local UDP state confirmation received: %s", self.device_id, res)
                 # Reconcile readback against desired state before clearing provisional
                 if isinstance(res, dict):

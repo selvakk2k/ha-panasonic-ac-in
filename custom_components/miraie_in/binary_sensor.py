@@ -17,9 +17,16 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from .const import DOMAIN
+from .const import DOMAIN, CONF_SETUP_MODE, SETUP_MODE_CLOUD
 from .logger import LOGGER
-from .utils import get_devices_for_entry, is_ir_only_entry, is_mqtt_topic
+from .utils import (
+    get_devices_for_entry,
+    is_ir_only_entry,
+    is_mqtt_topic,
+    safe_async_write_ha_state,
+    is_device_available,
+    build_device_info,
+)
 
 PARALLEL_UPDATES = 0
 
@@ -37,18 +44,43 @@ async def async_setup_entry(
     entities: list[BinarySensorEntity] = []
     is_ir_entry = is_ir_only_entry(entry)
     devices = get_devices_for_entry(hub, entry)
-
+    has_username = bool(entry.data.get("username"))
+    setup_mode = entry.data.get(CONF_SETUP_MODE, "")
 
     for device in devices:
         coordinator = coordinators.get(device.id)
         has_wifi = getattr(coordinator, "has_wifi", True) if coordinator else getattr(getattr(device, "details", None), "has_wifi", True)
+        if setup_mode == SETUP_MODE_CLOUD:
+            has_udp = False
+        elif coordinator is not None and hasattr(coordinator, "has_udp"):
+            has_udp = coordinator.has_udp
+        else:
+            has_udp = getattr(device, "supports_local_udp", False) or bool(
+                getattr(getattr(device, "details", None), "udp_control_key", None)
+            )
 
         if not is_ir_entry and has_wifi:
-            entities.append(MirAIeFilterCleanBinarySensor(device))
-            entities.append(MirAIeCoilCleanBinarySensor(device))
+            entities.append(MirAIeFilterCleanBinarySensor(device, coordinator))
+            entities.append(MirAIeCoilCleanBinarySensor(device, coordinator))
             if coordinator:
-                entities.append(MirAIeCloudMQTTConnectedBinarySensor(device, coordinator))
                 entities.append(MirAIeDeviceOnlineBinarySensor(device, coordinator))
+                if has_username:
+                    entities.append(MirAIeCloudMQTTConnectedBinarySensor(device, coordinator))
+                else:
+                    unq_id = f"{device.id}_cloud_mqtt_connected"
+                    entity_id = ent_reg.async_get_entity_id("binary_sensor", DOMAIN, unq_id)
+                    if entity_id:
+                        ent_reg.async_remove(entity_id)
+                        LOGGER.info("Cleaned up orphaned binary sensor %s for offline local UDP entry", entity_id)
+
+                if has_udp:
+                    entities.append(MirAIeLocalUdpConnectedBinarySensor(device, coordinator))
+                else:
+                    unq_id = f"{device.id}_udp_connected"
+                    entity_id = ent_reg.async_get_entity_id("binary_sensor", DOMAIN, unq_id)
+                    if entity_id:
+                        ent_reg.async_remove(entity_id)
+                        LOGGER.info("Cleaned up orphaned binary sensor %s for non-UDP entry", entity_id)
 
         if coordinator and coordinator.blaster_entity_id:
             entities.append(MirAIeIRBlasterAvailableBinarySensor(device, coordinator))
@@ -66,12 +98,13 @@ async def async_setup_entry(
 class MirAIeFilterCleanBinarySensor(BinarySensorEntity):
     """Representation of the Filter Clean alert sensor."""
 
-    def __init__(self, device: MirAIeDevice) -> None:
+    def __init__(self, device: MirAIeDevice, coordinator: Any | None = None) -> None:
         self._attr_should_poll: bool = False
         self._attr_has_entity_name = True
         self._attr_translation_key = "filter_clean_alert"
         self._attr_unique_id = f"{device.id}_filter_clean_alert"
         self.device = device
+        self.coordinator = coordinator
         self._attr_device_class = BinarySensorDeviceClass.PROBLEM
 
     @property
@@ -81,33 +114,24 @@ class MirAIeFilterCleanBinarySensor(BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         """Return True if filter clean alert is active (dirty filter)."""
-        return getattr(self.device.status, "filter_clean_alert", False)
+        st = getattr(self.device, "status", None)
+        return bool(st and getattr(st, "filter_clean_alert", False))
 
     @property
     def available(self) -> bool:
-        return self.device.status.is_online
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, self.coordinator)
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                (DOMAIN, self.device.id)
-            },
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""
         LOGGER.debug("Successfully added filter clean alert binary sensor to HA")
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -122,12 +146,13 @@ class MirAIeFilterCleanBinarySensor(BinarySensorEntity):
 class MirAIeCoilCleanBinarySensor(BinarySensorEntity):
     """Representation of the Coil Clean active sensor."""
 
-    def __init__(self, device: MirAIeDevice) -> None:
+    def __init__(self, device: MirAIeDevice, coordinator: Any | None = None) -> None:
         self._attr_should_poll: bool = False
         self._attr_has_entity_name = True
         self._attr_translation_key = "coil_cleaning"
         self._attr_unique_id = f"{device.id}_coil_cleaning"
         self.device = device
+        self.coordinator = coordinator
         self._attr_device_class = BinarySensorDeviceClass.RUNNING
 
     @property
@@ -137,33 +162,24 @@ class MirAIeCoilCleanBinarySensor(BinarySensorEntity):
     @property
     def is_on(self) -> bool:
         """Return True if coil clean is running."""
-        return self.device.status.preset_mode == PresetMode.CLEAN
+        st = getattr(self.device, "status", None)
+        return bool(st and getattr(st, "preset_mode", None) == PresetMode.CLEAN)
 
     @property
     def available(self) -> bool:
-        return self.device.status.is_online
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, self.coordinator)
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                (DOMAIN, self.device.id)
-            },
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self) -> None:
         """Run when this Entity has been added to HA."""
         LOGGER.debug("Successfully added coil cleaning binary sensor to HA")
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -196,12 +212,7 @@ class MirAIeIRBlasterAvailableBinarySensor(BinarySensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -256,12 +267,7 @@ class MirAIeCloudMQTTConnectedBinarySensor(BinarySensorEntity):
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -270,10 +276,7 @@ class MirAIeCloudMQTTConnectedBinarySensor(BinarySensorEntity):
                 self.coordinator.async_add_listener(self.async_write_ha_state)
             )
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -310,16 +313,12 @@ class MirAIeDeviceOnlineBinarySensor(BinarySensorEntity):
 
     @property
     def is_on(self) -> bool:
-        return self.device.status.is_online
+        st = getattr(self.device, "status", None)
+        return bool(st and getattr(st, "is_online", False))
 
     @property
     def device_info(self) -> DeviceInfo:
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-        )
+        return build_device_info(self.device)
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -328,10 +327,7 @@ class MirAIeDeviceOnlineBinarySensor(BinarySensorEntity):
                 self.coordinator.async_add_listener(self.async_write_ha_state)
             )
         def _safe_device_cb(*args, **kwargs) -> None:
-            if hasattr(self, "hass") and self.hass and hasattr(self.hass, "loop"):
-                self.hass.loop.call_soon_threadsafe(self.async_write_ha_state)
-            else:
-                self.async_write_ha_state()
+            safe_async_write_ha_state(self)
 
         self._device_callback = _safe_device_cb
         self.device.register_callback(self._device_callback)
@@ -339,6 +335,56 @@ class MirAIeDeviceOnlineBinarySensor(BinarySensorEntity):
     async def async_will_remove_from_hass(self) -> None:
         if hasattr(self, "_device_callback"):
             self.device.remove_callback(self._device_callback)
+
+
+class MirAIeLocalUdpConnectedBinarySensor(BinarySensorEntity):
+    """Binary sensor reporting local UDP reachability."""
+
+    def __init__(self, device: MirAIeDevice, coordinator) -> None:
+        self._attr_should_poll: bool = False
+        self._attr_has_entity_name = True
+        self._attr_translation_key = "udp_connected"
+        self._attr_unique_id = f"{device.id}_udp_connected"
+        self._attr_device_class = BinarySensorDeviceClass.CONNECTIVITY
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self.device = device
+        self.coordinator = coordinator
+
+    @property
+    def is_on(self) -> bool:
+        transport = getattr(self.device, "udp_transport", None)
+        if not transport or not getattr(transport, "is_running", False):
+            return False
+        protocol = getattr(transport, "_devices", {}).get(self.device.id)
+        if not protocol or not getattr(protocol, "ip_address", None):
+            return False
+        last_seen = getattr(protocol, "last_seen", 0.0)
+        if last_seen > 0:
+            import time
+            return (time.time() - last_seen) < 300
+        return False
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return build_device_info(self.device)
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        if hasattr(self, "coordinator") and self.coordinator:
+            self.async_on_remove(
+                self.coordinator.async_add_listener(self.async_write_ha_state)
+            )
+
+        def _safe_device_cb(*args, **kwargs) -> None:
+            safe_async_write_ha_state(self)
+
+        self._device_callback = _safe_device_cb
+        self.device.register_callback(self._device_callback)
+
+    async def async_will_remove_from_hass(self) -> None:
+        if hasattr(self, "_device_callback"):
+            self.device.remove_callback(self._device_callback)
+
 
 
 

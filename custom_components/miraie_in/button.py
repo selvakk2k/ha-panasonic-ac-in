@@ -22,7 +22,7 @@ from .sensor import async_backfill_energy_statistics, async_rebuild_full_energy_
 
 PARALLEL_UPDATES = 0
 from .logger import LOGGER
-from .utils import get_devices_for_entry, get_entry_data, is_ir_only_entry
+from .utils import get_devices_for_entry, get_entry_data, is_ir_only_entry, is_device_available, build_device_info
 
 
 async def async_setup_entry(
@@ -45,16 +45,27 @@ async def async_setup_entry(
     )
 
     entities: list[ButtonEntity] = []
+    has_username = bool(entry_data.get("username"))
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
 
     for device in devices:
         coordinator = coordinators.get(device.id)
         has_wifi = getattr(coordinator, "has_wifi", True) if coordinator else getattr(getattr(device, "details", None), "has_wifi", True)
 
-        LOGGER.debug("[button.setup] device=%s is_ir_entry=%s has_wifi=%s → coil clean & energy=%s", device.id, is_ir_entry, has_wifi, not is_ir_entry and has_wifi)
+        LOGGER.debug("[button.setup] device=%s is_ir_entry=%s has_wifi=%s has_username=%s", device.id, is_ir_entry, has_wifi, has_username)
         if not is_ir_entry and has_wifi:
-            entities.append(MirAIeCoilCleanButton(device))
-            entities.append(MirAIeRebuildEnergyStatsButton(hub, device))
-            entities.append(MirAIeVerifyEnergyStatsButton(hub, device))
+            entities.append(MirAIeCoilCleanButton(device, coordinator))
+            if has_username:
+                entities.append(MirAIeRebuildEnergyStatsButton(hub, device))
+                entities.append(MirAIeVerifyEnergyStatsButton(hub, device))
+            else:
+                for suffix in ["rebuild_energy_statistics", "verify_energy_statistics"]:
+                    unq_id = f"{device.id}_{suffix}"
+                    entity_id = ent_reg.async_get_entity_id("button", DOMAIN, unq_id)
+                    if entity_id:
+                        ent_reg.async_remove(entity_id)
+                        LOGGER.info("Cleaned up orphaned energy button %s for offline local UDP entry", entity_id)
 
     LOGGER.debug("[button.setup] total entities registered: %d", len(entities))
     async_add_entities(entities)
@@ -64,12 +75,13 @@ async def async_setup_entry(
 class MirAIeCoilCleanButton(ButtonEntity):
     """Representation of the Coil Clean trigger button entity."""
 
-    def __init__(self, device: MirAIeDevice) -> None:
+    def __init__(self, device: MirAIeDevice, coordinator: Any | None = None) -> None:
         self._attr_should_poll = False
         self._attr_has_entity_name = True
         self._attr_translation_key = "start_coil_clean"
         self._attr_unique_id = f"{device.id}_start_coil_clean"
         self.device = device
+        self.coordinator = coordinator
 
     @property
     def icon(self) -> str | None:
@@ -79,25 +91,34 @@ class MirAIeCoilCleanButton(ButtonEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={
-                (DOMAIN, self.device.id)
-            },
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     @property
     def available(self) -> bool:
-        """Return True if entity is available."""
-        return self.device.status.is_online
+        """Return True if entity is available across UDP, Cloud, and IR channels."""
+        return is_device_available(self.device, self.coordinator)
 
     async def async_press(self) -> None:
         """Press the button."""
         LOGGER.debug("Triggering coil clean cycle")
+        coord = self.coordinator
+        primary = getattr(coord, "primary_backend", "cloud") if coord else "cloud"
+        supports_udp = getattr(self.device, "supports_local_udp", False) is True
+        has_udp = supports_udp and getattr(self.device, "udp_transport", None) is not None
+        origin_label = "Local UDP" if (has_udp and primary == "local_udp") else "Cloud"
+        if coord:
+            coord.async_optimistic_update(preset="clean", origin=origin_label)
         await self.device.set_preset_mode(PresetMode.CLEAN)
+        if coord:
+            coord.state["last_controlled_by"] = origin_label
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to coordinator state updates."""
+        await super().async_added_to_hass()
+        if self.coordinator:
+            self.async_on_remove(
+                self.coordinator.async_add_listener(self.async_write_ha_state)
+            )
 
 
 class MirAIeRebuildEnergyStatsButton(ButtonEntity):
@@ -120,13 +141,7 @@ class MirAIeRebuildEnergyStatsButton(ButtonEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_press(self) -> None:
         """Trigger a full 6-8 month energy statistics rebuild for this device."""
@@ -158,13 +173,7 @@ class MirAIeVerifyEnergyStatsButton(ButtonEntity):
     @property
     def device_info(self) -> DeviceInfo:
         """Return the device info."""
-        return DeviceInfo(
-            identifiers={(DOMAIN, self.device.id)},
-            name=self.device.friendly_name,
-            manufacturer=self.device.details.brand,
-            model=self.device.details.model_number,
-            sw_version=self.device.details.firmware_version,
-        )
+        return build_device_info(self.device)
 
     async def async_press(self) -> None:
         """Trigger Yesterday -> Weekly -> Monthly gating verification."""
