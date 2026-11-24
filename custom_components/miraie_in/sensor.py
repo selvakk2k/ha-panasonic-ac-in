@@ -1,4 +1,5 @@
 import asyncio
+import aiohttp
 import re
 from abc import ABC, abstractmethod
 from typing import Any
@@ -73,17 +74,51 @@ class MirAIeEnergySensor(SensorEntity, ABC):
         self._attr_suggested_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
         self._attr_suggested_display_precision = 2
         self._attr_native_value = None
+        self._offline_logged: bool = False
+        self._last_fetch_success: bool = False
 
-    async def async_update(self):
+    async def _async_fetch_consumption_safe(self, date_string: str) -> float | None:
+        """Fetch consumption with log-when-unavailable connection latching."""
+        try:
+            consumption = await self.hub.get_energy_consumption(self.device, self.period_type, from_date=date_string)
+            value = consumption.get(date_string)
+            LOGGER.debug(
+                "%s | %s | key=%s | raw=%s | value=%s",
+                self.sensor_label, self.device.friendly_name, date_string, consumption, value,
+            )
+            if self._offline_logged:
+                LOGGER.info(
+                    "Connection restored fetching %s energy for %s",
+                    self.sensor_label, self.device.friendly_name,
+                )
+                self._offline_logged = False
+            return value
+        except (TimeoutError, aiohttp.ClientError) as err:
+            if not self._offline_logged:
+                LOGGER.warning(
+                    "Timeout fetching %s energy consumption for %s: %s (subsequent retries silenced)",
+                    self.sensor_label, self.device.friendly_name, err,
+                )
+                self._offline_logged = True
+            return None
+        except Exception:
+            LOGGER.exception(
+                "Unexpected error fetching %s energy consumption for %s [date_key=%s]",
+                self.sensor_label, self.device.friendly_name, date_string,
+            )
+            return None
+
+    async def async_update(self) -> bool:
         """Update the sensor state with the latest energy consumption data."""
         if not self.hub.http or self.hub.http.closed:
             LOGGER.error("MirAIe HTTP session is closed or unavailable")
-            return
+            self._last_fetch_success = False
+            return False
         consumption = await self.get_energy_consumption()
 
         if consumption is None:
-            """Skip update if no new data."""
-            return
+            self._last_fetch_success = False
+            return False
 
         if self._attr_state_class == SensorStateClass.TOTAL:
             await self._set_last_reset_time()
@@ -91,6 +126,8 @@ class MirAIeEnergySensor(SensorEntity, ABC):
             self._attr_last_reset = None
             
         self._attr_native_value = consumption
+        self._last_fetch_success = True
+        return True
 
     async def async_will_remove_from_hass(self):
         """Entity being removed from hass."""
@@ -128,21 +165,7 @@ class MirAIeYesterdayEnergySensor(MirAIeEnergySensor):
     async def get_energy_consumption(self) -> float | None:
         """Fetch yesterday's total energy consumption data."""
         yesterday = dt_util.now().date() - timedelta(days=1)
-        date_string = yesterday.strftime("%d%m%Y")
-        try:
-            consumption = await self.hub.get_energy_consumption(self.device, self.period_type, from_date=date_string)
-            value = consumption.get(date_string)
-            LOGGER.debug(
-                "%s | %s | key=%s | raw=%s | value=%s",
-                self.sensor_label, self.device.friendly_name, date_string, consumption, value,
-            )
-            return value
-        except Exception:
-            LOGGER.exception(
-                "%s energy consumption fetch failed for %s [date_key=%s]",
-                self.sensor_label, self.device.friendly_name, date_string,
-            )
-            raise
+        return await self._async_fetch_consumption_safe(yesterday.strftime("%d%m%Y"))
 
     async def _set_last_reset_time(self):
         """Set the last reset time for the yesterday energy sensor entity."""
@@ -167,26 +190,12 @@ class MirAIeTodayEnergySensor(MirAIeEnergySensor):
     async def get_energy_consumption(self) -> float | None:
         """Fetch today's (live, rolling) energy consumption data so far."""
         today = dt_util.now().date()
-        date_string = today.strftime("%d%m%Y")
-        try:
-            consumption = await self.hub.get_energy_consumption(self.device, self.period_type, from_date=date_string)
-            value = consumption.get(date_string)
-            LOGGER.debug(
-                "%s | %s | key=%s | raw=%s | value=%s",
-                self.sensor_label, self.device.friendly_name, date_string, consumption, value,
-            )
-            return value
-        except Exception:
-            LOGGER.exception(
-                "%s energy consumption fetch failed for %s [date_key=%s]",
-                self.sensor_label, self.device.friendly_name, date_string,
-            )
-            raise
+        return await self._async_fetch_consumption_safe(today.strftime("%d%m%Y"))
 
     async def async_update(self):
         """Update today's energy consumption sensor state and sync recorder statistic."""
-        await super().async_update()
-        if self._attr_native_value is not None and isinstance(self._attr_native_value, (int, float, str)):
+        updated = await super().async_update()
+        if updated and self._attr_native_value is not None and isinstance(self._attr_native_value, (int, float, str)):
             await self._async_sync_today_statistic(float(self._attr_native_value))
 
     async def _async_sync_today_statistic(self, today_val: float) -> None:
@@ -259,20 +268,7 @@ class MirAIeWeeklyEnergySensor(MirAIeEnergySensor):
     async def get_energy_consumption(self) -> float | None:
         """Fetch the latest weekly energy consumption data."""
         date_string = get_last_sunday().strftime("%d%m%Y")
-        try:
-            consumption = await self.hub.get_energy_consumption(self.device, self.period_type, from_date=date_string)
-            value = consumption.get(date_string)
-            LOGGER.debug(
-                "%s | %s | key=%s | raw=%s | value=%s",
-                self.period_type.value, self.device.friendly_name, date_string, consumption, value,
-            )
-            return value
-        except Exception:
-            LOGGER.exception(
-                "%s energy consumption fetch failed for %s [date_key=%s]",
-                self.period_type.value, self.device.friendly_name, date_string,
-            )
-            raise
+        return await self._async_fetch_consumption_safe(date_string)
 
     async def _set_last_reset_time(self):
         """Set the last reset time for the weekly energy sensor entity."""
@@ -293,21 +289,7 @@ class MirAIeMonthlyEnergySensor(MirAIeEnergySensor):
     async def get_energy_consumption(self) -> float | None:
         """Fetch the latest monthly energy consumption data."""
         yesterday = dt_util.now().date() - timedelta(days=1)
-        date_string = yesterday.strftime("%m%Y")
-        try:
-            consumption = await self.hub.get_energy_consumption(self.device, self.period_type, from_date=date_string)
-            value = consumption.get(date_string)
-            LOGGER.debug(
-                "%s | %s | key=%s | raw=%s | value=%s",
-                self.period_type.value, self.device.friendly_name, date_string, consumption, value,
-            )
-            return value
-        except Exception:
-            LOGGER.exception(
-                "%s energy consumption fetch failed for %s [date_key=%s]",
-                self.period_type.value, self.device.friendly_name, date_string,
-            )
-            raise
+        return await self._async_fetch_consumption_safe(yesterday.strftime("%m%Y"))
 
     async def _set_last_reset_time(self):
         """Set the last reset time for the monthly energy sensor entity."""
