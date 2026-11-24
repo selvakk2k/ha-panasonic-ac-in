@@ -5,8 +5,7 @@
     "mqtt"
   ],
   "codeowners": [
-    "@selvakk2k",
-    "@shashi278"
+    "@selvakk2k"
   ],
   "config_flow": true,
   "dependencies": [
