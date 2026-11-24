@@ -96,10 +96,19 @@ def setup_ha_stubs():
         class Schema:
             def __init__(self, schema):
                 self.schema = schema
+        class Marker(str):
+            def __new__(cls, key, default=None):
+                obj = super().__new__(cls, key)
+                obj.schema = key
+                obj._default = default
+                return obj
+            def default(self):
+                return self._default
+
         def Required(key, default=None):
-            return key
+            return Marker(key, default)
         def Optional(key, default=None):
-            return key
+            return Marker(key, default)
         vol.Schema = Schema
         vol.Required = Required
         vol.Optional = Optional
@@ -371,15 +380,18 @@ def setup_ha_stubs():
     # Selector helper stubs
     import homeassistant.helpers.selector as selector_mod
     class SelectorBase(dict):
-        def __init__(self, *args, **kwargs):
+        def __init__(self, config=None, *args, **kwargs):
             super().__init__(**kwargs)
+            self.config = config
         def __call__(self, v):
             return v
     class SelectOptionDict(dict):
-        def __init__(self, value="", label=""):
-            super().__init__(value=value, label=label)
+        def __init__(self, value="", label="", disabled=False, **kwargs):
+            super().__init__(value=value, label=label, disabled=disabled, **kwargs)
             self.value = value
             self.label = label
+            self.disabled = disabled
+            self.__dict__.update(kwargs)
     class SelectSelector(SelectorBase):
         pass
     class SelectSelectorConfig(dict):

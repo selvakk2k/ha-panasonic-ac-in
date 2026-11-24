@@ -55,7 +55,15 @@ from .utils import (
     get_entry_data,
     async_resolve_device_ip,
     async_benchmark_transports,
+    is_udp_supported_firmware,
 )
+try:
+    from panasonic_ac_models import ACModelLookup  # type: ignore[import-not-found, import-untyped]
+except ImportError:
+    try:
+        from .panasonic_ac_models import ACModelLookup  # type: ignore[import-not-found, import-untyped]
+    except ImportError:
+        from .panasonic_ac_models.lookup import ACModelLookup  # type: ignore[import-not-found, import-untyped]
 
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
@@ -96,6 +104,64 @@ def build_simple_devices_schema(default_install_date: str) -> vol.Schema:
             vol.Optional(CONF_INSTALL_DATE, default=default_install_date): selector.DateSelector(),
         }
     )
+
+
+_GLOBAL_LOOKUP: ACModelLookup | None = None
+
+
+def get_model_lookup() -> ACModelLookup:
+    """Return cached ACModelLookup instance."""
+    global _GLOBAL_LOOKUP
+    if _GLOBAL_LOOKUP is None:
+        _GLOBAL_LOOKUP = ACModelLookup()
+    return _GLOBAL_LOOKUP
+
+
+def format_device_capabilities(model_code: str) -> dict[str, str]:
+    """Extract and format human-friendly capabilities for a Panasonic AC model."""
+    if not model_code:
+        return {
+            "compressor": "Standard",
+            "swing": "2-Way Swing",
+            "features": "Cooling Only",
+            "summary": "Standard | 2-Way Swing | Cooling Only",
+        }
+    try:
+        lookup = get_model_lookup()
+        caps = lookup.get_capabilities(model_code) or {}
+    except Exception:
+        caps = {}
+
+    capacity = caps.get("capacity_class") or ""
+    speed = caps.get("speed_type")
+    speed_str = "Inverter" if speed == "variable" else "Fixed Speed" if speed == "fixed" else ""
+    compressor_profile = f"{capacity} {speed_str}".strip() if (capacity or speed_str) else "Standard"
+
+    swing = caps.get("swing_type")
+    if swing == "4-way":
+        swing_str = "4-Way Swing (H+V)"
+    elif swing == "2-way":
+        swing_str = "2-Way Swing (V only)"
+    else:
+        swing_str = "2-Way Swing"
+
+    features = []
+    converti = caps.get("converti_type")
+    if converti and converti != "none":
+        features.append(f"Converti {converti}")
+    if caps.get("has_nanoe"):
+        features.append("Nanoe Air Purification")
+    if caps.get("has_heat_mode"):
+        features.append("Heat & Cool")
+
+    features_str = ", ".join(features) if features else "Cooling Only"
+
+    return {
+        "compressor": compressor_profile,
+        "swing": swing_str,
+        "features": features_str,
+        "summary": f"{compressor_profile} | {swing_str} | {features_str}",
+    }
 
 
 def build_local_udp_devices_schema(
@@ -237,9 +303,55 @@ def build_cloud_devices_schema(default_install_date: str, supports_udp: bool = T
 
 
 async def validate_input(
-    hass: HomeAssistant, data: dict[str, Any]
+    hass: HomeAssistant, data: dict[str, Any], allow_demo: bool = True
 ) -> tuple[dict[str, Any], list[dict[str, str]]]:
     """Validate the user input allows us to connect and fetch discovered devices."""
+    username = str(data.get("username", "")).strip().lower()
+    if allow_demo and username in ("demo@miraie.in", "mock@miraie.in"):
+        mock_devices = [
+            {
+                "id": "mock_living_room_ac",
+                "name": "Living Room AC",
+                "model_code": "CS-CU-EU18CKY5XFM",
+                "firmware_version": "3.02",
+                "udp_control_key": "0123456789abcdef0123456789abcdef",
+                "udp_control_iv": "fedcba9876543210fedcba9876543210",
+                "mac_address": "7C:2C:67:AA:BB:01",
+                "ip_address": "192.168.1.101",
+            },
+            {
+                "id": "mock_master_bedroom_ac",
+                "name": "Master Bedroom AC",
+                "model_code": "CS-CU-KN18YKY",
+                "firmware_version": "2.15",
+                "udp_control_key": None,
+                "udp_control_iv": None,
+                "mac_address": "A8:48:FA:11:22:02",
+                "ip_address": None,
+            },
+            {
+                "id": "mock_study_room_ac",
+                "name": "Study Room AC",
+                "model_code": "CS-CU-HZ18XKY",
+                "firmware_version": "3.05",
+                "udp_control_key": "abcdef0123456789abcdef0123456789",
+                "udp_control_iv": "123456789abcdef0123456789abcdef0",
+                "mac_address": "7C:2C:67:AA:BB:03",
+                "ip_address": None,
+            },
+            {
+                "id": "mock_dining_room_ac",
+                "name": "Dining Room AC",
+                "model_code": "CS-CU-KN12YKY",
+                "firmware_version": "2.10",
+                "udp_control_key": None,
+                "udp_control_iv": None,
+                "mac_address": "A8:48:FA:11:22:04",
+                "ip_address": None,
+            },
+        ]
+        return {"title": "MirAIe Demo Account", "cloud_latency_ms": 15.2}, mock_devices
+
     session = async_get_clientsession(hass)
     try:
         hub = MirAIeHub(session)
@@ -320,6 +432,7 @@ async def validate_input(
                             dt = details_map.get(rd["id"], {})
                             if dt:
                                 rd["model_code"] = dt.get("modelNumber") or dt.get("modelName") or rd["model_code"]
+                                rd["firmware_version"] = dt.get("firmwareVersion") or ""
                                 rd["udp_control_key"] = dt.get("udpControlKey")
                                 rd["udp_control_iv"] = dt.get("udpControlIV")
                                 rd["mac_address"] = dt.get("macAddress")
@@ -358,10 +471,12 @@ async def validate_input(
                             udp_key = getattr(dt, "udp_control_key", None) if dt else None
                             udp_iv = getattr(dt, "udp_control_iv", None) if dt else None
                             mac = getattr(dt, "mac_address", None) if dt else None
+                            fw = getattr(dt, "firmware_version", None) if dt else None
                             discovered_devices.append({
                                 "id": dev_id,
                                 "name": getattr(dev, "friendly_name", "MirAIe Cloud AC"),
                                 "model_code": model_number or "",
+                                "firmware_version": fw or "",
                                 "udp_control_key": udp_key,
                                 "udp_control_iv": udp_iv,
                                 "mac_address": mac,
@@ -574,13 +689,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not discovered_devices:
                 return self.async_abort(reason="no_devices_found")
 
-            udp_devices = [d for d in discovered_devices if d.get("udp_control_key") and d.get("udp_control_iv")]
-            if not udp_devices:
-                return self.async_abort(reason="no_udp_devices_found")
-
             existing_dev_ids, existing_macs = _get_existing_device_identifiers(self._async_current_entries())
             new_devices = [
-                d for d in udp_devices
+                d for d in discovered_devices
                 if str(d.get("id", "")).strip().lower() not in existing_dev_ids
                 and (
                     not d.get("mac_address")
@@ -591,17 +702,132 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not new_devices:
                 return self.async_abort(reason="already_configured")
 
+            compatible_udp = [
+                d for d in new_devices
+                if d.get("udp_control_key")
+                and d.get("udp_control_iv")
+                and is_udp_supported_firmware(d.get("firmware_version"))
+            ]
+            if not compatible_udp:
+                devices_with_keys = [
+                    d for d in new_devices
+                    if d.get("udp_control_key") and d.get("udp_control_iv")
+                ]
+                if not devices_with_keys:
+                    return self.async_abort(reason="no_udp_devices_found")
+                return self.async_abort(reason="incompatible_firmware_udp")
+
             self._cloud_credentials = user_input
             self._cloud_latency_ms = info.get("cloud_latency_ms")
             self._discovered_cloud_devices = new_devices
             self._current_device_index = 0
             self._per_device_options = {}
             self._setup_mode = SETUP_MODE_LOCAL_UDP
+            if len(new_devices) > 1:
+                return await self.async_step_select_devices()
             return await self.async_step_local_udp_devices()
 
         return self.async_show_form(
             step_id="local_udp_auto",
             data_schema=build_login_schema(),
+            errors=errors,
+        )
+
+    async def async_step_select_devices(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Allow user to select which discovered AC units to enroll."""
+        errors: dict[str, str] = {}
+        devices = getattr(self, "_discovered_cloud_devices", [])
+        if not devices:
+            return self.async_abort(reason="no_devices_found")
+
+        setup_mode = getattr(self, "_setup_mode", None)
+        is_udp_mode = (setup_mode == SETUP_MODE_LOCAL_UDP)
+
+        def _check_udp_eligibility(d: dict[str, Any]) -> tuple[bool, str]:
+            if not (d.get("udp_control_key") and d.get("udp_control_iv")):
+                return False, "Missing UDP credentials (use Cloud, Hybrid Cloud+IR, or IR)"
+            if not is_udp_supported_firmware(d.get("firmware_version")):
+                fw = d.get("firmware_version")
+                fw_str = f"FW: {fw}" if fw else "unsupported"
+                return False, f"Incompatible firmware ({fw_str}; requires 3.x+; use Cloud, Hybrid, or IR)"
+            return True, ""
+
+        if is_udp_mode:
+            eligible_devices = [d for d in devices if _check_udp_eligibility(d)[0]]
+            ineligible_devices = [d for d in devices if not _check_udp_eligibility(d)[0]]
+        else:
+            eligible_devices = devices
+            ineligible_devices = []
+
+        if user_input is not None:
+            selected_ids = user_input.get("selected_devices", [])
+            if not selected_ids:
+                errors["base"] = "no_devices_selected"
+            else:
+                self._discovered_cloud_devices = [
+                    d for d in eligible_devices if str(d.get("id")) in selected_ids
+                ]
+                self._current_device_index = 0
+                if setup_mode == SETUP_MODE_LOCAL_UDP:
+                    return await self.async_step_local_udp_devices()
+                if setup_mode == SETUP_MODE_HYBRID:
+                    return await self.async_step_hybrid_devices()
+                return await self.async_step_cloud_devices()
+
+        options = []
+        default_selected = []
+
+        for dev in eligible_devices:
+            dev_id = str(dev.get("id"))
+            name = dev.get("name", "AC Unit")
+            model = dev.get("model_code", "MirAIe AC")
+            fw = dev.get("firmware_version")
+            fw_note = f" (FW: {fw})" if fw else ""
+
+            caps = format_device_capabilities(model)
+            label = f"{name} — {caps['compressor']}, {caps['swing']}{fw_note}"
+            options.append(selector.SelectOptionDict(value=dev_id, label=label))
+            default_selected.append(dev_id)
+
+        incompatible_lines = []
+        if ineligible_devices:
+            incompatible_lines.append("\n\n> **Ineligible for Local UDP:**")
+            for dev in ineligible_devices:
+                name = dev.get("name", "AC Unit")
+                model = dev.get("model_code", "MirAIe AC")
+                fw = dev.get("firmware_version")
+                fw_str = f", FW: {fw}" if fw else ""
+                _, reason = _check_udp_eligibility(dev)
+                clean_reason = reason.split("(")[0].strip()
+                incompatible_lines.append(f"> - **{name}** ({model}{fw_str}) — {clean_reason}")
+            incompatible_lines.append(">\n> *These units can still be configured via Cloud, Hybrid, or IR mode.*")
+
+        schema = vol.Schema(
+            {
+                vol.Required(
+                    "selected_devices",
+                    default=default_selected,
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                )
+            }
+        )
+
+        incompatible_text = "\n".join(incompatible_lines)
+        return self.async_show_form(
+            step_id="select_devices",
+            data_schema=schema,
+            description_placeholders={
+                "count": str(len(devices)),
+                "capabilities_overview": "",
+                "incompatible_overview": incompatible_text,
+            },
             errors=errors,
         )
 
@@ -653,7 +879,19 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception as err:
                 _LOGGER.debug("Speed test during local udp config flow failed: %s", err)
 
-        model_display = f"Model: **{dev_model}**{speed_test_str}" if dev_model else f"Model: Auto-detecting via Cloud{speed_test_str}"
+        model_parts = []
+        if dev_model:
+            caps = format_device_capabilities(dev_model)
+            model_parts.append(f"Model: **{dev_model}** ({caps['summary']})")
+        else:
+            model_parts.append("Model: Auto-detecting via Cloud")
+        if default_ip:
+            model_parts.append(f"Auto-detected LAN IP: **{default_ip}**")
+        else:
+            model_parts.append("Could not auto-detect local IP (please enter below)")
+        if speed_test_str:
+            model_parts.append(speed_test_str.lstrip(" | "))
+        model_display = " | ".join(model_parts)
 
         if user_input is None:
             return self.async_show_form(
@@ -716,6 +954,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "device_name": dev_name,
             "device_id": current_dev["id"],
             "model_code": dev_model,
+            "firmware_version": current_dev.get("firmware_version", ""),
             "is_ir_only": False,
             CONF_DEVICE_IP: ip_str,
             CONF_DEVICE_MAC: clean_mac,
@@ -825,6 +1064,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._current_device_index = 0
             self._per_device_options = {}
             self._setup_mode = SETUP_MODE_CLOUD
+            if len(new_devices) > 1:
+                return await self.async_step_select_devices()
             return await self.async_step_cloud_devices()
 
         return self.async_show_form(
@@ -850,7 +1091,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         current_dev = devices[idx]
         dev_name = current_dev.get("name", "AC Unit")
         dev_model = current_dev.get("model_code", "")
-        model_display = f"Model: **{dev_model}**" if dev_model else "Model: Auto-detecting via Cloud"
+        if dev_model:
+            caps = format_device_capabilities(dev_model)
+            model_display = f"Model: **{dev_model}** ({caps['summary']})"
+        else:
+            model_display = "Model: Auto-detecting via Cloud"
         default_install = six_months_ago(date.today()).isoformat()
 
         if user_input is None:
@@ -898,6 +1143,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "device_id": current_dev["id"],
             "device_name": dev_name,
             "model_code": dev_model,
+            "firmware_version": current_dev.get("firmware_version", ""),
             "is_ir_only": False,
             CONF_PRIMARY_BACKEND: BACKEND_CLOUD,
             CONF_SECONDARY_BACKEND: "none",
@@ -1006,6 +1252,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._current_device_index = 0
             self._per_device_options = {}
             self._setup_mode = SETUP_MODE_HYBRID
+            if len(new_devices) > 1:
+                return await self.async_step_select_devices()
             return await self.async_step_hybrid_devices()
 
         return self.async_show_form(
@@ -1032,7 +1280,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         dev_name = current_dev.get("name", "AC Unit")
         dev_model = current_dev.get("model_code", "")
         default_install = six_months_ago(date.today()).isoformat()
-        has_udp = bool(current_dev.get("udp_control_key") and current_dev.get("udp_control_iv"))
+        has_udp = bool(
+            current_dev.get("udp_control_key")
+            and current_dev.get("udp_control_iv")
+            and is_udp_supported_firmware(current_dev.get("firmware_version"))
+        )
 
         if has_udp and not current_dev.get("ip_address"):
             resolved_ip = await async_resolve_device_ip(
@@ -1072,7 +1324,25 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 speed_test_str = f" | Speed Test: {' | '.join(parts)}"
                 self._benchmark_cache[dev_id] = speed_test_str
 
-        model_display = f"Model: **{dev_model}**{speed_test_str}" if dev_model else f"Model: Auto-detecting via Cloud{speed_test_str}"
+        model_parts = []
+        if dev_model:
+            caps = format_device_capabilities(dev_model)
+            model_parts.append(f"Model: **{dev_model}** ({caps['summary']})")
+        else:
+            model_parts.append("Model: Auto-detecting via Cloud")
+
+        fw = current_dev.get("firmware_version")
+        if fw and not is_udp_supported_firmware(fw):
+            model_parts.append("Incompatible firmware for Local UDP (use Cloud, Hybrid Cloud+IR, or IR)")
+        elif has_udp:
+            if default_ip:
+                model_parts.append(f"Auto-detected LAN IP: **{default_ip}**")
+            else:
+                model_parts.append("Could not auto-detect local IP (please enter below)")
+
+        if speed_test_str:
+            model_parts.append(speed_test_str.lstrip(" | "))
+        model_display = " | ".join(model_parts)
 
         if user_input is None:
             return self.async_show_form(
@@ -1106,6 +1376,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         secondary_backend_val = user_input.get(CONF_SECONDARY_BACKEND, "cloud" if has_udp else "none")
         submode_val = user_input.get(CONF_HYBRID_SUBMODE, "auto")
         ir_fmt = user_input.get(CONF_IR_FORMAT, "auto")
+
+        user_ip = str(user_input.get(CONF_DEVICE_IP, "")).strip() if user_input.get(CONF_DEVICE_IP) else ""
+        if (backend_val == "local_udp" or secondary_backend_val == "local_udp") and not user_ip and not errors:
+            errors[CONF_DEVICE_IP] = "ip_required_for_udp"
 
         if ir_fmt == "tasmota":
             if mqtt_topic and blaster_val:
@@ -1192,6 +1466,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             "device_id": current_dev["id"],
             "device_name": dev_name,
             "model_code": dev_model,
+            "firmware_version": current_dev.get("firmware_version", ""),
             "is_ir_only": False,
             CONF_UDP_CONTROL_KEY: current_dev.get("udp_control_key"),
             CONF_UDP_CONTROL_IV: current_dev.get("udp_control_iv"),
@@ -1507,7 +1782,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         if user_input is not None:
             try:
-                await validate_input(self.hass, user_input)
+                await validate_input(self.hass, user_input, allow_demo=False)
             except CannotConnect:
                 errors["base"] = "cannot_connect"
             except InvalidAuth:
@@ -1760,6 +2035,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         )
         is_ir_only = bool(entry_data.get("is_ir_only", False))
         supports_udp = not is_ir_only
+        fw_ver = getattr(dt, "firmware_version", None) or entry_data.get("firmware_version")
+        if fw_ver and not is_udp_supported_firmware(fw_ver):
+            supports_udp = False
         has_udp = supports_udp and bool(current_udp_key and current_udp_iv)
         has_cloud = bool(
             (entry_data.get("username") and not is_ir_only)

@@ -330,34 +330,43 @@ class MirAIeClimate(ClimateEntity):
                 return False
 
         # Attempt backends in strictly configured sequence
-        for idx, backend in enumerate(order):
-            is_fallback = (idx > 0)
-            if is_cloud_offline and backend == "ir":
-                origin_name = "IR Failover (Offline)"
-            elif is_fallback and backend == "ir":
-                origin_name = f"IR Failover ({order[idx-1]} failed)"
-            else:
-                origin_name = "IR Blaster"
+        cloud_coro_awaited = False
+        try:
+            for idx, backend in enumerate(order):
+                is_fallback = (idx > 0)
+                if is_cloud_offline and backend == "ir":
+                    origin_name = "IR Failover (Offline)"
+                elif is_fallback and backend == "ir":
+                    origin_name = f"IR Failover ({order[idx-1]} failed)"
+                else:
+                    origin_name = "IR Blaster"
 
-            if backend == "local_udp":
-                if await _try_udp():
-                    if coord:
-                        coord.state["last_controlled_by"] = "Local UDP"
-                    return
-            elif backend == "ir":
-                if await _try_ir(origin_name):
-                    return
-            elif backend == "cloud":
-                if await _try_cloud():
-                    if coord:
-                        coord.state["last_controlled_by"] = "Cloud"
-                    return
-                elif secondary != "none" and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None) and "ir" not in order[idx+1:]:
-                    # Proactive offline failover to IR if Cloud fails/offline and IR is not explicitly ordered next
-                    if await _try_ir("IR Failover (Offline)"):
+                if backend == "local_udp":
+                    if await _try_udp():
+                        if coord:
+                            coord.state["last_controlled_by"] = "Local UDP"
                         return
+                elif backend == "ir":
+                    if await _try_ir(origin_name):
+                        return
+                elif backend == "cloud":
+                    cloud_coro_awaited = True
+                    if await _try_cloud():
+                        if coord:
+                            coord.state["last_controlled_by"] = "Cloud"
+                        return
+                    elif secondary != "none" and getattr(coord, "hybrid_submode", "auto") == "auto" and getattr(coord, "blaster_entity_id", None) and "ir" not in order[idx+1:]:
+                        # Proactive offline failover to IR if Cloud fails/offline and IR is not explicitly ordered next
+                        if await _try_ir("IR Failover (Offline)"):
+                            return
 
-        LOGGER.error("Device %s: All configured transports failed (%s)", self.device.id, order)
+            LOGGER.error("Device %s: All configured transports failed (%s)", self.device.id, order)
+        finally:
+            if not cloud_coro_awaited and cloud_coro is not None and hasattr(cloud_coro, "close"):
+                try:
+                    cloud_coro.close()
+                except Exception:
+                    pass
 
     @property
     def name(self) -> str | None:

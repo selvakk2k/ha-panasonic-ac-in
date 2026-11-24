@@ -308,6 +308,228 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["type"], "abort")
         self.assertEqual(res["reason"], "already_configured")
 
+    async def test_firmware_compatibility_helper(self):
+        """Test is_udp_supported_firmware utility."""
+        from custom_components.miraie_in.utils import is_udp_supported_firmware
+
+        self.assertTrue(is_udp_supported_firmware("3.02"))
+        self.assertTrue(is_udp_supported_firmware("3.0.2"))
+        self.assertTrue(is_udp_supported_firmware("v3.02"))
+        self.assertTrue(is_udp_supported_firmware("V3.0.2"))
+        self.assertTrue(is_udp_supported_firmware("3.1"))
+        self.assertTrue(is_udp_supported_firmware("4.0"))
+        self.assertFalse(is_udp_supported_firmware("2.15"))
+        self.assertFalse(is_udp_supported_firmware("v2.15"))
+        self.assertFalse(is_udp_supported_firmware("2.10"))
+        self.assertFalse(is_udp_supported_firmware("1.0"))
+        self.assertFalse(is_udp_supported_firmware("IR-1.0"))
+        self.assertFalse(is_udp_supported_firmware(""))
+        self.assertFalse(is_udp_supported_firmware(None))
+
+    async def test_demo_account_discovery(self):
+        """Test demo@miraie.in mock discovery returning multiple AC units."""
+        from custom_components.miraie_in.config_flow import validate_input
+
+        hass = MockHass()
+        info, devices = await validate_input(hass, {"username": "demo@miraie.in", "password": "any"})
+        self.assertEqual(info["title"], "MirAIe Demo Account")
+        self.assertEqual(len(devices), 4)
+        self.assertEqual(devices[0]["firmware_version"], "3.02")
+        self.assertEqual(devices[1]["firmware_version"], "2.15")
+
+    async def test_select_devices_step_filtering(self):
+        """Test async_step_select_devices form and user selection."""
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow._setup_mode = "cloud"
+        flow._discovered_cloud_devices = [
+            {"id": "ac_1", "name": "Living Room AC", "model_code": "CS-CU-1"},
+            {"id": "ac_2", "name": "Bedroom AC", "model_code": "CS-CU-2"},
+        ]
+
+        # 1. Show form
+        res_form = await flow.async_step_select_devices()
+        self.assertEqual(res_form["type"], "form")
+        self.assertEqual(res_form["step_id"], "select_devices")
+
+        # 2. Empty selection error
+        res_empty = await flow.async_step_select_devices({"selected_devices": []})
+        self.assertEqual(res_empty["type"], "form")
+        self.assertEqual(res_empty["errors"]["base"], "no_devices_selected")
+
+        # 3. Select single device and proceed
+        from unittest.mock import AsyncMock
+        flow.async_step_cloud_devices = AsyncMock(return_value={"type": "form", "step_id": "cloud_devices"})
+        res_selected = await flow.async_step_select_devices({"selected_devices": ["ac_1"]})
+        self.assertEqual(len(flow._discovered_cloud_devices), 1)
+        self.assertEqual(flow._discovered_cloud_devices[0]["id"], "ac_1")
+
+    async def test_local_udp_auto_incompatible_firmware_abort(self):
+        """Test local UDP auto setup aborts with incompatible_firmware_udp if devices are < 3.x."""
+        from unittest.mock import patch
+
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[])
+
+        legacy_devices = [
+            {
+                "id": "ac_legacy",
+                "name": "Legacy AC",
+                "model_code": "CS-CU-KN18YKY",
+                "firmware_version": "2.15",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+            }
+        ]
+
+        with patch("custom_components.miraie_in.config_flow.validate_input", return_value=({"cloud_latency_ms": 10}, legacy_devices)):
+            res = await flow.async_step_local_udp_auto({"username": "user@example.com", "password": "pass"})
+            self.assertEqual(res["type"], "abort")
+            self.assertEqual(res["reason"], "incompatible_firmware_udp")
+
+    async def test_hybrid_devices_requires_ip_for_udp(self):
+        """Test that selecting local_udp in hybrid mode without an IP throws an error."""
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow._discovered_cloud_devices = [
+            {
+                "id": "ac_modern",
+                "name": "Modern AC",
+                "model_code": "CS-CU-EU18CKY",
+                "firmware_version": "3.02",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+                "mac_address": "7C:2C:67:AA:BB:CC",
+                "ip_address": "",
+            }
+        ]
+        flow._current_device_index = 0
+
+        from unittest.mock import AsyncMock, patch
+        with patch(
+            "custom_components.miraie_in.config_flow.async_resolve_device_ip",
+            new=AsyncMock(return_value=None),
+        ):
+            res = await flow.async_step_hybrid_devices({
+                "primary_backend": "local_udp",
+                "secondary_backend": "cloud",
+                "hybrid_submode": "auto",
+                "device_ip": "",
+            })
+        self.assertEqual(res["type"], "form")
+        self.assertEqual(res.get("errors", {}).get("device_ip"), "ip_required_for_udp")
+
+    async def test_select_devices_udp_mode_disabled_options_and_capabilities(self):
+        """Test async_step_select_devices partitions compatible vs incompatible devices in UDP mode."""
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow._setup_mode = "local_udp"
+        flow._discovered_cloud_devices = [
+            {
+                "id": "ac_modern",
+                "name": "Modern AC",
+                "model_code": "CS-CU-EU18CKY5XFM",
+                "firmware_version": "3.02",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+            },
+            {
+                "id": "ac_legacy",
+                "name": "Legacy AC",
+                "model_code": "CS-CU-KN18YKY",
+                "firmware_version": "2.15",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+            },
+        ]
+
+        # 1. Show form
+        res_form = await flow.async_step_select_devices()
+        self.assertEqual(res_form["type"], "form")
+        self.assertEqual(res_form["step_id"], "select_devices")
+        placeholders = res_form["description_placeholders"]
+        self.assertIn("capabilities_overview", placeholders)
+        self.assertEqual(placeholders["capabilities_overview"], "")
+        self.assertIn("incompatible_overview", placeholders)
+        self.assertIn("CS-CU-KN18YKY", placeholders["incompatible_overview"])
+        self.assertIn("Incompatible firmware", placeholders["incompatible_overview"])
+
+        # Check schema options: only compatible devices are offered as checkboxes
+        schema = res_form["data_schema"]
+        options = schema.schema["selected_devices"].config["options"]
+        self.assertEqual(len(options), 1)
+        self.assertEqual(options[0]["value"], "ac_modern")
+        self.assertIn("1.5T Inverter, 4-Way Swing", options[0]["label"])
+
+        # Check default selection only includes modern AC
+        marker = next(k for k in schema.schema if k == "selected_devices")
+        self.assertEqual(marker.default(), ["ac_modern"])
+
+        # 2. Allow valid submission
+        from unittest.mock import AsyncMock
+        flow.async_step_local_udp_devices = AsyncMock(return_value={"type": "form", "step_id": "local_udp_devices"})
+        res_valid = await flow.async_step_select_devices({"selected_devices": ["ac_modern"]})
+        self.assertEqual(len(flow._discovered_cloud_devices), 1)
+        self.assertEqual(flow._discovered_cloud_devices[0]["id"], "ac_modern")
+
+    async def test_demo_account_local_udp_auto_flow(self):
+        """Test demo@miraie.in in local_udp_auto correctly renders select_devices with partitioned devices."""
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[])
+
+        res = await flow.async_step_local_udp_auto({"username": "demo@miraie.in", "password": "any"})
+        self.assertEqual(res["type"], "form")
+        self.assertEqual(res["step_id"], "select_devices")
+
+        # 2 compatible ACs (Living Room, Study Room) in checkboxes
+        schema = res["data_schema"]
+        options = schema.schema["selected_devices"].config["options"]
+        self.assertEqual(len(options), 2)
+        opt_ids = [o["value"] for o in options]
+        self.assertIn("mock_living_room_ac", opt_ids)
+        self.assertIn("mock_study_room_ac", opt_ids)
+
+        # 2 incompatible ACs in description text
+        incomp = res["description_placeholders"]["incompatible_overview"]
+        self.assertIn("Master Bedroom AC", incomp)
+        self.assertIn("Dining Room AC", incomp)
+        self.assertIn("CS-CU-KN18YKY", incomp)
+
+    async def test_local_udp_auto_mixed_devices_preserves_all_for_selection(self):
+        """Test local UDP auto setup preserves both compatible and incompatible devices for select_devices."""
+        from unittest.mock import patch
+
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow.hass.config_entries.async_entries = MagicMock(return_value=[])
+
+        mixed_devices = [
+            {
+                "id": "ac_modern",
+                "name": "Modern AC",
+                "model_code": "CS-CU-EU18CKY5XFM",
+                "firmware_version": "3.02",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+            },
+            {
+                "id": "ac_legacy",
+                "name": "Legacy AC",
+                "model_code": "CS-CU-KN18YKY",
+                "firmware_version": "2.15",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+            },
+        ]
+
+        with patch("custom_components.miraie_in.config_flow.validate_input", return_value=({"cloud_latency_ms": 10}, mixed_devices)):
+            res = await flow.async_step_local_udp_auto({"username": "user@example.com", "password": "pass"})
+            self.assertEqual(res["type"], "form")
+            self.assertEqual(res["step_id"], "select_devices")
+            self.assertEqual(len(flow._discovered_cloud_devices), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

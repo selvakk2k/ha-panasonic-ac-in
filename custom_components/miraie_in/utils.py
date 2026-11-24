@@ -166,6 +166,22 @@ def is_device_available(device: Any, coordinator: Any | None = None) -> bool:
     return bool(has_udp or has_cloud or has_ir)
 
 
+def is_udp_supported_firmware(version_str: str | None) -> bool:
+    """Return True if the firmware version supports Local UDP control (major version >= 3)."""
+    if not version_str:
+        return False
+    import re
+    clean = str(version_str).strip().lstrip("vV")
+    match = re.search(r"(\d+)(?:\.(\d+))?", clean)
+    if not match:
+        return False
+    try:
+        major = int(match.group(1))
+        return major >= 3
+    except (ValueError, TypeError):
+        return False
+
+
 async def async_resolve_device_ip(
     device_id: str | None = None,
     mac_address: str | None = None,
@@ -175,7 +191,7 @@ async def async_resolve_device_ip(
 
     Checks:
     1. Active UDP listener cache for the unique device_id.
-    2. Local ARP table for exact MAC or physical OUI prefix match.
+    2. Local ARP table for exact MAC match.
     3. Active UDP discovery broadcast.
     """
     from miraie_ac.transport.udp import LocalUdpTransportManager
@@ -191,7 +207,6 @@ async def async_resolve_device_ip(
     # 2. Check local ARP cache
     if mac_address:
         clean = mac_address.replace(":", "").replace("-", "").upper()
-        prefix = clean[:10]  # First 5 bytes to handle +/- 1 Wi-Fi chip MAC offset
         try:
             with open("/proc/net/arp") as f:
                 for line in f.readlines()[1:]:
@@ -199,7 +214,7 @@ async def async_resolve_device_ip(
                     if len(parts) >= 4:
                         arp_ip = parts[0]
                         arp_mac = parts[3].replace(":", "").replace("-", "").upper()
-                        if arp_mac == clean or (prefix and arp_mac.startswith(prefix)):
+                        if arp_mac == clean:
                             return arp_ip
         except Exception:
             pass

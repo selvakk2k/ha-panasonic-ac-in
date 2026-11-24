@@ -103,6 +103,13 @@
           "password": "Password"
         }
       },
+      "select_devices": {
+        "title": "Select Devices to Enroll",
+        "description": "Select which discovered AC units to enroll into Home Assistant:{incompatible_overview}",
+        "data": {
+          "selected_devices": "Devices to Enroll"
+        }
+      },
       "hybrid_devices": {
         "title": "Configure Hybrid: {device_name}",
         "description": "Configure transport failover and hardware peripherals for this unit:\n\n{model_display}",
@@ -110,7 +117,7 @@
           "primary_backend": "Primary Control Transport",
           "secondary_backend": "Secondary Fallback Transport",
           "hybrid_submode": "Failover Mode",
-          "device_ip": "AC IP Address (Optional - auto-detected)",
+          "device_ip": "AC IP Address",
           "device_mac": "Device MAC Address (Wi-Fi MAC)",
           "controller_id": "Local Controller Identifier (Default: ha)",
           "udp_control_key": "UDP Control Key (AES-256 Key)",
@@ -126,7 +133,7 @@
         },
         "data_description": {
           "device_ip": "Local IP address of the AC on your Wi-Fi network for Local UDP control.",
-          "device_mac": "Hardware MAC address of the AC Wi-Fi module (e.g. 8C:53:AF:CA:62:52). Required for offline manual Local UDP setup.",
+          "device_mac": "Hardware MAC address of the AC Wi-Fi module (e.g. AA:BB:CC:11:22:33). Required for offline manual Local UDP setup.",
           "controller_id": "Unique 2-to-4 character client identifier sent in local UDP command packets. Defaults to 'ha' (Home Assistant). Only modify this if you run multiple Home Assistant instances or need to distinguish commands from a specific controller (e.g. 'h2', 'ha_dev').",
           "udp_control_key": "Secret 32-byte AES encryption key used for local UDP communication. You can copy this key for manual offline UDP setup or CLI tools.",
           "udp_control_iv": "Secret 16-byte AES initialization vector used for local UDP communication. You can copy this IV for manual offline UDP setup or CLI tools.",
@@ -224,12 +231,17 @@
       "invalid_key": "Invalid UDP Control Key. Must be a 32-byte hex string.",
       "invalid_iv": "Invalid UDP Control IV. Must be a 16-byte hex string.",
       "invalid_ip": "Invalid IP address. Please enter a valid IPv4 address.",
-      "invalid_mac": "Invalid MAC address."
+      "invalid_mac": "Invalid MAC address.",
+      "no_devices_selected": "Please select at least one device to enroll.",
+      "incompatible_device_selected": "One or more selected devices cannot be enrolled via Local UDP only mode (incompatible firmware or missing UDP credentials). Please uncheck them or configure using any of the other 3 modes (Cloud, Hybrid, or IR).",
+      "ip_required_for_udp": "Local IP address is required when Local UDP transport is selected."
     },
     "abort": {
       "already_configured": "This device is already configured",
       "no_devices_found": "No Panasonic AC devices found on this MirAIe account.",
       "no_udp_devices_found": "No AC units with local UDP encryption keys were found on this account.",
+      "incompatible_firmware_udp": "Discovered devices have incompatible firmware for Local UDP control. Please use any of the other 3 modes (Cloud, Hybrid (Cloud + IR), or Infrared Blaster).",
+      "no_devices_selected": "No devices were selected for enrollment.",
       "reauth_successful": "[%key:common::config_flow::abort::reauth_successful%]"
     }
   },
@@ -242,7 +254,7 @@
           "primary_backend": "Primary Control Transport",
           "secondary_backend": "Secondary Fallback Transport",
           "hybrid_submode": "Failover Mode",
-          "device_ip": "AC IP Address (Optional - auto-detected)",
+          "device_ip": "AC IP Address",
           "device_mac": "Device MAC Address (Wi-Fi MAC)",
           "controller_id": "Local Controller Identifier (Default: ha)",
           "udp_control_key": "UDP Control Key (AES-256 Key)",
@@ -258,7 +270,7 @@
         },
         "data_description": {
           "device_ip": "Local IP address of the AC on your Wi-Fi network for Local UDP control.",
-          "device_mac": "Hardware MAC address of the AC Wi-Fi module (e.g. 8C:53:AF:CA:62:52). Required for offline manual Local UDP setup.",
+          "device_mac": "Hardware MAC address of the AC Wi-Fi module (e.g. AA:BB:CC:11:22:33). Required for offline manual Local UDP setup.",
           "controller_id": "Unique 2-to-4 character client identifier sent in local UDP command packets. Defaults to 'ha' (Home Assistant). Only modify this if you run multiple Home Assistant instances or need to distinguish commands from a specific controller (e.g. 'h2', 'ha_dev').",
           "udp_control_key": "Secret 32-byte AES encryption key used for local UDP communication. You can copy this key for manual offline UDP setup or CLI tools.",
           "udp_control_iv": "Secret 16-byte AES initialization vector used for local UDP communication. You can copy this IV for manual offline UDP setup or CLI tools.",

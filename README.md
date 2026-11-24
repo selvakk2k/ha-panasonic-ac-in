@@ -12,7 +12,7 @@
   <a href="https://aiattribution.github.io/interpret-attribution"><img src="https://img.shields.io/badge/AI%20Attribution-AIA%20PAI%20Nc%20Hin-orange?style=flat-square" alt="AI Attribution"></a>
 </p>
 
-A comprehensive Home Assistant custom integration for Panasonic Air Conditioners operating on the Indian-market MirAIe IoT platform. Features a dual-transport Hybrid architecture combining real-time Cloud MQTT with zero-latency Local IR blaster failover, long-term historical energy statistics import, and convertible capacity limits.
+A comprehensive Home Assistant custom integration for Panasonic Air Conditioners operating on the Indian-market MirAIe IoT platform. Features a multi-transport architecture combining real-time Cloud MQTT, zero-latency Local UDP, and offline Local IR blaster failover, long-term historical energy statistics import, and convertible capacity limits.
 
 > [!IMPORTANT]
 > This integration is designed **exclusively** for Panasonic Air Conditioners using the Indian **MirAIe** mobile application. It is **not compatible** with Panasonic ACs that use the global **Comfort Cloud** platform.
@@ -21,8 +21,8 @@ A comprehensive Home Assistant custom integration for Panasonic Air Conditioners
 > A companion Lovelace dashboard card is available: **[panasonic-ac-card-in](https://github.com/selvakk2k/panasonic-ac-card-in)** (Panasonic AC India Card).
 
 > [!NOTE]
-> ### Upgrading from 1.x to 2.0
-> Upgrading requires zero configuration changes. The integration domain remains `miraie_in`. All existing climate entities, automations, and dashboard cards continue working without reconfiguration. Dual-transport local IR failover is completely optional and can be enabled at any time via device Options.
+> ### Upgrading to 2.1
+> Upgrading is fully automated. Config entries seamlessly migrate to schema version 3, and orphaned display entities are cleaned up per-device. You can configure Local UDP and select your exact model at any time under device **Configure / Options**. All existing climate entities, automations, and dashboard cards continue working without reconfiguration.
 
 ---
 
@@ -43,15 +43,17 @@ A comprehensive Home Assistant custom integration for Panasonic Air Conditioners
 ## Key Features
 
 ### 1. Hardware & Platform Support
+* **Interactive AC Model Selector**: Guided model selector in initial setup and per-device options flow, powered jointly by `miraie-ac-in` (cloud capabilities) and `panasonic-ac-models` (hardware database covering 500+ Indian Panasonic AC models).
 * **Converti7 and Converti8 Capacity Limits**: Dynamically exposes convertible capacity presets (40% up to 110%) matching your model's exact hardware generation.
 * **Firmware 3.02+ Ambient Decoding**: Accurately parses packed decimal room temperature payloads returned by modern firmware (e.g. decoding `"134.30"` to `30°C`).
 * **Hardware-Gated Heat Controls**: Automatically restricts `HEAT` mode options to verified Hot & Cold inverter hardware (such as `EZ` and `KZ` series).
 
 ### 2. Controls & Sensors
+* **Display Mode Control**: Automatically provides binary `switch.<device>_display` or multi-state `select.<device>_display_mode` for models supporting Night/Dim display modes.
 * **Nanoe™ Air Purification**: Exposes switch entities to toggle built-in nanoe-G and nanoe-X air purification generators on supported series (`XU`, `HU`).
 * **Coil Cleaning Cycle**: Stateless trigger button to run the self-cleaning indoor coil cycle and a binary sensor tracking active cycle progress.
 * **Filter Clean Notification**: Binary sensor indicating when the indoor unit's controller flags that the mesh air filter requires cleaning.
-* **Telemetry & Signal**: Tracks Wi-Fi RSSI (in dBm) and detects whether the last command originated via physical IR remote, mobile app, or Home Assistant.
+* **Telemetry & Signal**: Tracks Wi-Fi RSSI (in dBm), local UDP connection state (`binary_sensor.<device>_local_udp_connected`), and detects whether the last command originated via Local UDP, physical IR remote, mobile app, or Home Assistant.
 
 ---
 
@@ -67,35 +69,36 @@ Verified on physical Indian inverter hardware:
 | **CS-CU-KZ18XKY** | KZ Series (Hot & Cold) | Gated Heat Mode, Converti Series | ✅ Hardware Verified |
 
 > [!NOTE]
-> Models not listed in this table are not blocked during setup. Any Indian-market Panasonic inverter split AC (including Converti 7-in-1 and Converti 8-in-1 series) sharing this remote protocol or connected via the Indian MirAIe mobile app will function normally. The table above lists physically tested hardware, not a hard compatibility limit.
+> Models not listed in this table are not blocked during setup. Any Indian-market Panasonic AC model sharing this remote protocol or connected via the Indian MirAIe mobile app will function normally. The table above lists physically tested hardware, not a hard compatibility limit.
 
 ---
 
 ## Control Modes & Architecture
 
-The integration supports three operating modes depending on how you set up your AC:
+The integration supports a decoupled, multi-transport architecture allowing you to configure primary, secondary, and tertiary backends with automated failover:
 
-* **Cloud-Only Mode**: Set up using your MirAIe account for Wi-Fi ACs. No IR blaster hardware is required. Provides full temperature control, convertible capacity presets, live room temperature readings, and long-term energy import.
-* **Hybrid Mode**: Created by attaching a local IR blaster entity to a Cloud-connected Wi-Fi AC. Commands are dispatched instantly over local IR, while the cloud connection provides live state confirmation, diagnostics, and energy data. If the internet connection drops, local commands continue operating without interruption.
-* **Standalone IR-Only Mode**: A separate, cloud-free setup path for non-Wi-Fi ACs or users wanting 100% offline control. In the setup wizard, choose **Standalone IR Device**, enter your Panasonic AC model, and it's feature set will then be retrieved from the hardware database. Confirm the features and then add your IR blaster (receiver is optional). Creates a fully capable local climate entity without any cloud account.
+* **Cloud MQTT Push**: Real-time bidirectional telemetry, status feedback, and historical energy analytics via MirAIe IoT servers.
+* **Decoupled Local UDP Transport**: Zero-latency local network control with automatic device IP resolution and active connection telemetry (`binary_sensor.<device>_local_udp_connected`). Local UDP protocol research and integration by @dtechterminal (`ha-panasonic-miraie-local`).
+* **Local IR Blaster**: Offline survivability and instant local thermostat dispatch using ESPHome, Broadlink, or Tuya transmitters.
+* **Standalone IR-Only Mode**: A cloud-free setup path for non-Wi-Fi ACs or 100% offline control, selecting your model from the hardware database and attaching an IR transmitter.
 
 ```
                   ┌─────────────────────────────────────────┐
                   │       Panasonic AC Climate Entity       │
                   └────────────────────┬────────────────────┘
                                        │
-                    ┌──────────────────┴──────────────────┐
-                    ▼                                     ▼
-          [Cloud MQTT Push]                       [Local IR Blaster]
-          • Real-time bi-directional telemetry    • Zero-latency local dispatch
-          • Energy data & diagnostic states       • Offline survivability
-          • Automatic cloud failover target       • Native Home Assistant Infrared
+     ┌─────────────────────────────────┼─────────────────────────────────┐
+     ▼                                 ▼                                 ▼
+[Local UDP]                    [Cloud MQTT Push]                 [Local IR Blaster]
+• Zero-latency local dispatch  • Real-time bi-directional sync   • Offline survivability
+• Auto IP resolution           • Energy data & diagnostics       • Native Home Assistant IR
+• Direct Wi-Fi LAN control     • Multi-device synchronization    • Broadlink / Tuya / ESPHome
 ```
 
-* **Unified Single Climate Entity**: In Hybrid mode, commands and controls route through a single `climate.<device>` entity without generating duplicate entities.
-* **Auto Failover Mode**: Thermostat commands are sent over local IR for instant response, while status updates are confirmed via cloud MQTT. If the internet connection drops, local commands continue functioning without interruption.
-* **Manual Backend Selection**: Use the integration's backend switch entity (`switch.<device>_backend`) to lock control to Cloud-only or IR-only modes manually or via automations.
-* **Optional IR Receiver**: An IR receiver is optional. In Hybrid mode, Cloud MQTT acts as the authoritative state feedback loop, preventing state drift without extra receiver hardware. The IR receiver is only for receiving commands from external IR remotes/devices (eg. IR blaster from phone). 
+* **Unified Single Climate Entity**: Commands and controls route through a single `climate.<device>` entity regardless of active transport.
+* **Decoupled 4-Tier Transport Priority**: In device Options, flexibly assign **Primary**, **Secondary**, and **Tertiary** transports across `Local UDP`, `IR Blaster`, `Cloud MQTT`, or `Disabled`.
+* **Auto Failover Mode**: Dispatches commands through your primary transport and automatically fails over to secondary or tertiary transports if the primary transport is unreachable.
+* **Optional IR Receiver**: An IR receiver is optional. State confirmation can be received via Cloud MQTT or Local UDP, preventing state drift without extra receiver hardware. 
 
 ---
 

@@ -204,11 +204,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     entry_data = get_entry_data(entry)
     has_username = bool(entry_data.get("username"))
     is_ir_only = is_ir_only_entry(entry)
+    is_demo = str(entry_data.get("username", "")).strip().lower() in ("demo@miraie.in", "mock@miraie.in")
 
     async def _dummy_async_coro(*args: Any, **kwargs: Any) -> None:
         return None
 
-    if is_ir_only or not has_username:
+    if is_ir_only or not has_username or is_demo:
         hub = MirAIeHub()
         hub.home = type("Home", (), {"devices": []})()
         dev_id = entry_data.get("device_id") or entry.unique_id or f"manual_{entry.entry_id}"
