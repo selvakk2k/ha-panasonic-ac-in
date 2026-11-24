@@ -1,6 +1,7 @@
 pytest>=9.0.0
 pytest-asyncio>=1.4.0
 pytest-homeassistant-custom-component>=0.13.356
-miraie-ac-in>=1.1.4
+miraie-ac-in>=1.5.0,<2.0.0
+panasonic-ac-models>=1.2.0,<2.0.0
 aiomqtt>=2.0.1
 voluptuous

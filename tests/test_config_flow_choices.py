@@ -1,7 +1,7 @@
 """Unit tests verifying setup choices and manual device creation."""
 import unittest
 import asyncio
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, AsyncMock, patch
 
 from tests.ha_stub import setup_ha_stubs
 setup_ha_stubs()
@@ -444,27 +444,34 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
             },
         ]
 
-        # 1. Show form
-        res_form = await flow.async_step_select_devices()
-        self.assertEqual(res_form["type"], "form")
-        self.assertEqual(res_form["step_id"], "select_devices")
-        placeholders = res_form["description_placeholders"]
-        self.assertIn("capabilities_overview", placeholders)
-        self.assertEqual(placeholders["capabilities_overview"], "")
-        self.assertIn("incompatible_overview", placeholders)
-        self.assertIn("CS-CU-KN18YKY", placeholders["incompatible_overview"])
-        self.assertIn("Incompatible firmware", placeholders["incompatible_overview"])
+        # 1. Show form with deterministic model capabilities lookup
+        mock_lookup = MagicMock()
+        mock_lookup.get_capabilities.return_value = {
+            "capacity_class": "1.5T",
+            "speed_type": "variable",
+            "swing_type": "4-way",
+        }
+        with patch("custom_components.miraie_in.config_flow.get_model_lookup", return_value=mock_lookup):
+            res_form = await flow.async_step_select_devices()
+            self.assertEqual(res_form["type"], "form")
+            self.assertEqual(res_form["step_id"], "select_devices")
+            placeholders = res_form["description_placeholders"]
+            self.assertIn("capabilities_overview", placeholders)
+            self.assertEqual(placeholders["capabilities_overview"], "")
+            self.assertIn("incompatible_overview", placeholders)
+            self.assertIn("CS-CU-KN18YKY", placeholders["incompatible_overview"])
+            self.assertIn("Incompatible firmware", placeholders["incompatible_overview"])
 
-        # Check schema options: only compatible devices are offered as checkboxes
-        schema = res_form["data_schema"]
-        options = schema.schema["selected_devices"].config["options"]
-        self.assertEqual(len(options), 1)
-        self.assertEqual(options[0]["value"], "ac_modern")
-        self.assertIn("1.5T Inverter, 4-Way Swing", options[0]["label"])
+            # Check schema options: only compatible devices are offered as checkboxes
+            schema = res_form["data_schema"]
+            options = schema.schema["selected_devices"].config["options"]
+            self.assertEqual(len(options), 1)
+            self.assertEqual(options[0]["value"], "ac_modern")
+            self.assertIn("1.5T Inverter, 4-Way Swing", options[0]["label"])
 
-        # Check default selection only includes modern AC
-        marker = next(k for k in schema.schema if k == "selected_devices")
-        self.assertEqual(marker.default(), ["ac_modern"])
+            # Check default selection only includes modern AC
+            marker = next(k for k in schema.schema if k == "selected_devices")
+            self.assertEqual(marker.default(), ["ac_modern"])
 
         # 2. Allow valid submission
         from unittest.mock import AsyncMock
@@ -472,6 +479,31 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
         res_valid = await flow.async_step_select_devices({"selected_devices": ["ac_modern"]})
         self.assertEqual(len(flow._discovered_cloud_devices), 1)
         self.assertEqual(flow._discovered_cloud_devices[0]["id"], "ac_modern")
+
+    async def test_select_devices_udp_mode_fallback_capabilities(self):
+        """Test fallback capabilities formatting when model lookup yields no data."""
+        flow = ConfigFlow()
+        flow.hass = MockHass()
+        flow._setup_mode = "local_udp"
+        flow._discovered_cloud_devices = [
+            {
+                "id": "ac_modern",
+                "name": "Modern AC",
+                "model_code": "UNKNOWN_MODEL",
+                "firmware_version": "3.02",
+                "udp_control_key": "00" * 32,
+                "udp_control_iv": "11" * 16,
+            },
+        ]
+
+        mock_lookup = MagicMock()
+        mock_lookup.get_capabilities.return_value = None
+        with patch("custom_components.miraie_in.config_flow.get_model_lookup", return_value=mock_lookup):
+            res_form = await flow.async_step_select_devices()
+            schema = res_form["data_schema"]
+            options = schema.schema["selected_devices"].config["options"]
+            self.assertEqual(len(options), 1)
+            self.assertIn("Standard, 2-Way Swing", options[0]["label"])
 
     async def test_demo_account_local_udp_auto_flow(self):
         """Test demo@miraie.in in local_udp_auto correctly renders select_devices with partitioned devices."""
