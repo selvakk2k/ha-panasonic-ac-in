@@ -194,6 +194,12 @@ logger:
 * Go to the Device page for your Air Conditioner.
 * Under **Device info**, click **Download diagnostics** to save the complete state and payload snapshot.
 
+### 3. Offline Testing & Demo Mode
+For testing dashboard cards (such as `panasonic-ac-card-in`) or Lovelace automations without physical hardware or live Panasonic cloud credentials, you can use the built-in mock mode:
+1. Add a new integration entry (**Settings → Devices & Services → Add Integration → Panasonic AC India**).
+2. Enter `demo@miraie.in` as the mobile number / user ID and any password.
+3. The integration will create a simulated Panasonic AC entity with responsive controls, energy history, and convertible presets.
+
 ---
 
 ## My Integrations & Lovelace Cards
