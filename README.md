@@ -78,7 +78,7 @@ Verified on physical Indian inverter hardware:
 The integration supports a decoupled, multi-transport architecture allowing you to configure primary, secondary, and tertiary backends with automated failover:
 
 * **Cloud MQTT Push**: Real-time bidirectional telemetry, status feedback, and historical energy analytics via MirAIe IoT servers.
-* **Decoupled Local UDP Transport**: Zero-latency local network control with automatic device IP resolution and active connection telemetry (`binary_sensor.<device>_local_udp_connected`). Local UDP protocol research and integration by @dtechterminal (`ha-panasonic-miraie-local`).
+* **Decoupled Local UDP Transport (Firmware 3.x)**: Zero-latency local network control with automatic device IP resolution and active connection telemetry (`binary_sensor.<device>_local_udp_connected`). Supported on AC units running firmware 3.x. Local UDP protocol research and integration by @dtechterminal (`ha-panasonic-miraie-local`).
 * **Local IR Blaster**: Offline survivability and instant local thermostat dispatch using ESPHome, Broadlink, or Tuya transmitters.
 * **Standalone IR-Only Mode**: A cloud-free setup path for non-Wi-Fi ACs or 100% offline control, selecting your model from the hardware database and attaching an IR transmitter.
 
@@ -89,7 +89,7 @@ The integration supports a decoupled, multi-transport architecture allowing you 
                                        │
      ┌─────────────────────────────────┼─────────────────────────────────┐
      ▼                                 ▼                                 ▼
-[Local UDP]                    [Cloud MQTT Push]                 [Local IR Blaster]
+[Local UDP (3.x FW)]           [Cloud MQTT Push]                 [Local IR Blaster]
 • Zero-latency local dispatch  • Real-time bi-directional sync   • Offline survivability
 • Auto IP resolution           • Energy data & diagnostics       • Native Home Assistant IR
 • Direct Wi-Fi LAN control     • Multi-device synchronization    • Broadlink / Tuya / ESPHome
