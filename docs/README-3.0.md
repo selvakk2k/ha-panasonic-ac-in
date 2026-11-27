@@ -1,7 +1,7 @@
 # Panasonic AC India (`ha-panasonic-ac-in`)
 
 <p align="center">
-  <img src="custom_components/miraie_in/brand/logo.png" alt="Panasonic AC India Logo" width="380">
+  <img src="../custom_components/miraie_in/brand/logo.png" alt="Panasonic AC India Logo" width="380">
 </p>
 
 <!-- ha-marketplace:exclude-start -->
@@ -24,7 +24,7 @@ A comprehensive Home Assistant custom integration for Panasonic Air Conditioners
 
 > [!NOTE]
 > ### Upgrading to 3.0
-> Upgrading from `2.1` is fully automated. Config entries migrate cleanly, existing `climate.*` entities and automations keep working without reconfiguration, and cumulative energy statistics are preserved. See **[What's New in 3.0](docs/v3.0-whats-new.md)** for highlights and screenshots.
+> Upgrading from `2.1` is fully automated. Config entries migrate cleanly, existing `climate.*` entities and automations keep working without reconfiguration, and cumulative energy statistics are preserved. See **[What's New in 3.0](v3.0-whats-new.md)** for highlights and screenshots.
 
 ---
 
@@ -85,9 +85,9 @@ The integration supports a decoupled, multi-connection architecture allowing you
 
 * **Cloud MQTT Push**: Real-time bidirectional telemetry, status feedback, and historical energy analytics via MirAIe IoT servers.
 * **Local UDP (Firmware 3.x)**: Zero-latency local network control with automatic device IP resolution, periodic heartbeat keepalive, and connection telemetry (`binary_sensor.<device>_local_udp_connected`). Local UDP protocol research and integration by @dtechterminal (`ha-panasonic-miraie-local`).
-* **Matter AC Bridge**: Local Matter control with packed-temperature decoding, `16–30 °C` setpoint bounds, standalone Matter-Only mode, or capability-based Hybrid delegation. See [Matter Setup Guide](docs/setup-matter.md).
+* **Matter AC Bridge**: Local Matter control with packed-temperature decoding, `16–30 °C` setpoint bounds, standalone Matter-Only mode, or capability-based Hybrid delegation. See [Matter Setup Guide](setup-matter.md).
 * **Local IR Blaster**: Offline survivability and instant local thermostat dispatch using ESPHome, Broadlink, or Tuya transmitters.
-* **Offline Hybrid & Standalone Modes**: Run `Local UDP + IR`, `Matter + IR`, `Matter + Local UDP`, `Matter Only`, or `IR Only` completely offline with zero cloud dependency. See [Offline & Hybrid Setup Guide](docs/setup-offline-hybrid.md).
+* **Offline Hybrid & Standalone Modes**: Run `Local UDP + IR`, `Matter + IR`, `Matter + Local UDP`, `Matter Only`, or `IR Only` completely offline with zero cloud dependency. See [Offline & Hybrid Setup Guide](setup-offline-hybrid.md).
 
 ```
                   ┌─────────────────────────────────────────┐
@@ -113,7 +113,7 @@ The integration supports a decoupled, multi-connection architecture allowing you
 
 * **Blended Real-Time Energy (`sensor.<device>_energy_today`)**: Combines live inverter power estimation (powered by the 508-model BEE database in `panasonic-ac-models`) with official MirAIe Cloud totals for accurate, non-duplicated Energy Dashboard tracking.
 * **Historical Energy Import**: Automatically imports daily historical energy consumption from the MirAIe cloud (up to ~8 months back) directly into Home Assistant's recorder statistics database under `sensor.<device>_energy_history`.
-* **Deep Inverter Diagnostics (`/diag`)**: Enable **Enable Deep Diagnostics Sensors** in Device Settings to decode live **Compressor Frequency (`Hz`)**, **Evaporator Coil Temp (`°C`)**, **Outdoor Condenser Temp (`°C`)**, **Voltage (`V`)**, and **Current (`A`)**. See [Energy & Diagnostics Guide](docs/energy-and-diagnostics.md).
+* **Deep Inverter Diagnostics (`/diag`)**: Enable **Enable Deep Diagnostics Sensors** in Device Settings to decode live **Compressor Frequency (`Hz`)**, **Evaporator Coil Temp (`°C`)**, **Outdoor Condenser Temp (`°C`)**, **Voltage (`V`)**, and **Current (`A`)**. See [Energy & Diagnostics Guide](energy-and-diagnostics.md).
 * **Diagnostic Maintenance Buttons**: Exposes **Rebuild Energy Statistics** (`mdi:database-refresh`) and **Verify Energy Statistics** (`mdi:database-check`) button entities directly on the device page for on-demand audit and repair.
 
 ---
@@ -247,5 +247,5 @@ For testing dashboard cards (such as `panasonic-ac-card-in`) or Lovelace automat
 * **Automated Code Review & Auditing**: **CodeRabbit** ([@coderabbitai](https://github.com/coderabbitai)) — automated pull request and pre-commit code reviews, edge case detection, and security verification.
 * **Pre-Release Code Review & Auditing**: **Claude** (Anthropic) — independent architectural review, edge-case analysis, and verification of upstream compatibility.
 
-Licensed under the **Apache-2.0 License**. See the [LICENSE](LICENSE) file for details.
+Licensed under the **Apache-2.0 License**. See the [LICENSE](../LICENSE) file for details.
 
