@@ -51,6 +51,13 @@ async def async_setup_entry(
 
     for device in devices:
         coordinator = coordinators.get(device.id)
+        t_caps = coordinator.get_transport_caps() if coordinator and hasattr(coordinator, "get_transport_caps") else {}
+        if isinstance(t_caps, dict) and t_caps.get("is_matter_only_configured") is True:
+            for suffix in ("start_coil_clean", "rebuild_energy_statistics", "verify_energy_statistics"):
+                eid = ent_reg.async_get_entity_id("button", DOMAIN, f"{device.id}_{suffix}")
+                if eid:
+                    ent_reg.async_remove(eid)
+            continue
         has_wifi = getattr(coordinator, "has_wifi", True) if coordinator else getattr(getattr(device, "details", None), "has_wifi", True)
 
         LOGGER.debug("[button.setup] device=%s is_ir_entry=%s has_wifi=%s has_username=%s", device.id, is_ir_entry, has_wifi, has_username)

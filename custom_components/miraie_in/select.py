@@ -47,6 +47,12 @@ async def async_setup_entry(
 
     for device in devices:
         coordinator = coordinators.get(device.id)
+        t_caps = coordinator.get_transport_caps() if coordinator and hasattr(coordinator, "get_transport_caps") else {}
+        if isinstance(t_caps, dict) and t_caps.get("is_matter_only_configured") is True:
+            eid = ent_reg.async_get_entity_id("select", DOMAIN, f"{device.id}_display_mode")
+            if eid:
+                ent_reg.async_remove(eid)
+            continue
         supports_night = getattr(device, "supports_night_display", False)
         if not supports_night and coordinator and hasattr(coordinator, "capabilities"):
             supports_night = bool(coordinator.capabilities.get("supports_night_display", False))

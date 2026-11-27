@@ -4,6 +4,13 @@ from typing import Any
 
 from .logger import LOGGER
 
+import os
+import sys
+
+_LOCAL_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.path.isdir(os.path.join(_LOCAL_DIR, "miraie_ac")) and _LOCAL_DIR not in sys.path:
+    sys.path.insert(0, _LOCAL_DIR)
+
 from miraie_ac import MirAIeBroker, MirAIeHub
 from miraie_ac.transport.udp import LocalUdpTransportManager
 
@@ -14,13 +21,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.helpers.event import async_track_time_change, async_track_time_interval
 from homeassistant.helpers.start import async_at_started
 from homeassistant.exceptions import ConfigEntryNotReady, ConfigEntryAuthFailed
 from homeassistant.helpers.issue_registry import IssueSeverity, async_create_issue
-from datetime import date
+from datetime import date, timedelta
 import aiohttp
 import asyncio
+import time
 
 from .const import (
     CONF_INSTALL_DATE,
@@ -38,7 +46,16 @@ from .const import (
     CONF_UDP_CONTROL_KEY,
     CONF_UDP_CONTROL_IV,
     CONF_SETUP_MODE,
+    CONF_MATTER_ENTITY_ID,
+    CONF_HYBRID_TIER,
+    CONF_ENABLE_DEEP_DIAGNOSTICS,
     SETUP_MODE_CLOUD,
+    SETUP_MODE_MATTER,
+    SETUP_MODE_LOCAL_UDP,
+    SETUP_MODE_IR,
+    SETUP_MODE_HYBRID,
+    HYBRID_TIER_OFFLINE,
+    HYBRID_TIER_CLOUD_CONNECTED,
     DEFAULT_CONTROLLER_ID,
     DOMAIN,
     SWING_V_MAP,
@@ -212,6 +229,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if is_ir_only or not has_username or is_demo:
         hub = MirAIeHub()
         hub.home = type("Home", (), {"devices": []})()
+        if is_demo:
+            from datetime import timedelta as _td
+            from homeassistant.util import dt as _dt_util
+
+            hub.http = type("DemoHttp", (), {"closed": False})()
+
+            async def _demo_get_energy(dev, period_type, from_date=None):
+                key = from_date or _dt_util.now().date().strftime("%d%m%Y")
+                p_val = str(getattr(period_type, "value", period_type)).lower()
+                if "week" in p_val:
+                    return {key: 11.4}
+                if "month" in p_val:
+                    return {key: 42.6}
+                return {key: 1.85}
+
+            async def _demo_get_energy_full(dev, period_type, start_date, end_date):
+                res: dict[str, float] = {}
+                cur_d = max(start_date, end_date - _td(days=14))
+                idx = 0
+                while cur_d <= end_date:
+                    res[cur_d.strftime("%d%m%Y")] = round(1.2 + (idx % 5) * 0.25, 2)
+                    cur_d += _td(days=1)
+                    idx += 1
+                return res
+
+            hub.get_energy_consumption = _demo_get_energy
+            hub.get_energy_consumption_full = _demo_get_energy_full
         dev_id = entry_data.get("device_id") or entry.unique_id or f"manual_{entry.entry_id}"
         model_code = entry.data.get("model_code", "CS-CU-RU18CKY-1")
         name = entry.data.get("name", entry.title)
@@ -535,10 +579,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         pass
 
 
-    # Start Local UDP Transport Singleton if not already running (excluded for Cloud-Only and IR-Only)
+    # Start Local UDP Transport Singleton if not already running (excluded for Cloud-Only, IR-Only, and Matter-Only)
     udp_manager: LocalUdpTransportManager | None = None
     entry_setup_mode = entry.options.get(CONF_SETUP_MODE) or entry.data.get(CONF_SETUP_MODE)
-    if entry_setup_mode != SETUP_MODE_CLOUD and not is_ir_only:
+    has_any_udp_keys = bool(
+        entry.data.get(CONF_UDP_CONTROL_KEY)
+        or entry.options.get(CONF_UDP_CONTROL_KEY)
+        or any(
+            isinstance(d_opt, dict) and d_opt.get(CONF_UDP_CONTROL_KEY)
+            for d_opt in devices_opt.values()
+        )
+        or any(getattr(getattr(d, "details", None), "udp_control_key", None) for d in target_devices)
+    )
+    if entry_setup_mode != SETUP_MODE_CLOUD and not is_ir_only and (entry_setup_mode != SETUP_MODE_MATTER or has_any_udp_keys):
         udp_manager = LocalUdpTransportManager.get_instance()
         if not udp_manager.is_running:
             try:
@@ -634,12 +687,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 else:
                     hass.async_create_task(_initial_udp_query())
 
+                # Periodic 180s Local UDP heartbeat keeps last_seen fresh (<300s) and detects true disconnects
+                async def _udp_heartbeat(_now=None, dev=device, ctrl=controller_id, mgr=udp_manager) -> None:
+                    proto = getattr(mgr, "_devices", {}).get(dev.id) if mgr else None
+                    last_seen = getattr(proto, "last_seen", 0.0) if proto else 0.0
+                    if last_seen > 0 and (time.time() - last_seen) < 100:
+                        return
+                    try:
+                        try:
+                            await dev.send_udp_command({"ps": "query"}, controller=ctrl)
+                        except TypeError:
+                            await dev.send_udp_command({"ps": "query"})
+                    except Exception:
+                        if hasattr(dev, "refresh"):
+                            dev.refresh()
+
+                if hasattr(entry, "async_on_unload"):
+                    entry.async_on_unload(
+                        async_track_time_interval(hass, _udp_heartbeat, timedelta(seconds=180))
+                    )
+
+        if CONF_MATTER_ENTITY_ID in dev_opt:
+            matter_entity_id = dev_opt[CONF_MATTER_ENTITY_ID] or None
+        elif CONF_MATTER_ENTITY_ID in entry.options:
+            matter_entity_id = entry.options[CONF_MATTER_ENTITY_ID] or None
+        else:
+            matter_entity_id = entry.data.get(CONF_MATTER_ENTITY_ID) or None
+        hybrid_tier = dev_opt.get(CONF_HYBRID_TIER) or entry.options.get(CONF_HYBRID_TIER) or entry.data.get(CONF_HYBRID_TIER, "")
+        if CONF_ENABLE_DEEP_DIAGNOSTICS in dev_opt:
+            enable_deep_diag = bool(dev_opt[CONF_ENABLE_DEEP_DIAGNOSTICS])
+        elif CONF_ENABLE_DEEP_DIAGNOSTICS in entry.options:
+            enable_deep_diag = bool(entry.options[CONF_ENABLE_DEEP_DIAGNOSTICS])
+        else:
+            enable_deep_diag = bool(entry.data.get(CONF_ENABLE_DEEP_DIAGNOSTICS, False))
+        has_cloud_conn = bool(has_username and not is_ir_only and entry_setup_mode not in (SETUP_MODE_LOCAL_UDP, SETUP_MODE_MATTER) and hybrid_tier != HYBRID_TIER_OFFLINE)
+
         coordinator = MirAIeDeviceCoordinator(
             hass=hass,
             entry_id=entry.entry_id,
             device_id=device.id,
             model_code=model_code,
-            has_wifi=not is_ir_only,
+            has_wifi=not is_ir_only and entry_setup_mode != SETUP_MODE_MATTER,
             blaster_entity_id=blaster_id,
             receiver_entity_id=receiver_id,
             temperature_sensor_entity_id=temp_sensor_id,
@@ -651,6 +739,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             hybrid_submode=submode,
             ir_format=ir_fmt,
             controller_id=controller_id,
+            matter_entity_id=matter_entity_id,
+            setup_mode=str(entry_setup_mode or ""),
+            hybrid_tier=str(hybrid_tier or ""),
+            enable_deep_diagnostics=enable_deep_diag,
+            has_cloud=has_cloud_conn,
             lookup=lookup,
             device=device,
         )

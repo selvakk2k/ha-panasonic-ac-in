@@ -24,10 +24,16 @@ class TestConfigFlowChoices(unittest.IsolatedAsyncioTestCase):
         res = await flow.async_step_user()
         self.assertEqual(res["type"], "menu")
         self.assertEqual(res["step_id"], "user")
-        self.assertIn("local_udp", res["menu_options"])
-        self.assertIn("cloud", res["menu_options"])
-        self.assertIn("hybrid", res["menu_options"])
-        self.assertIn("ir_device", res["menu_options"])
+        self.assertEqual(res["menu_options"], ["cloud", "local_only", "hybrid_menu"])
+
+        res_local = await flow.async_step_local_only()
+        self.assertIn("local_udp", res_local["menu_options"])
+        self.assertIn("ir_device", res_local["menu_options"])
+        self.assertIn("matter", res_local["menu_options"])
+
+        res_hybrid = await flow.async_step_hybrid_menu()
+        self.assertIn("hybrid", res_hybrid["menu_options"])
+        self.assertIn("hybrid_local_menu", res_hybrid["menu_options"])
 
     async def test_ir_device_step_creation(self):
         flow = ConfigFlow()

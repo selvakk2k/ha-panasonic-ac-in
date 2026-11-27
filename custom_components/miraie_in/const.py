@@ -28,16 +28,25 @@ CONF_SWING_TYPE = "swing_type"
 CONF_HAS_HEAT = "has_heat"
 CONF_HAS_NANOE = "has_nanoe"
 CONF_CONVERTI_TIER = "converti_tier"
+CONF_MATTER_ENTITY_ID = "matter_entity_id"
+CONF_HYBRID_TIER = "hybrid_tier"
+CONF_ENABLE_DEEP_DIAGNOSTICS = "enable_deep_diagnostics"
 
 
 BACKEND_LOCAL_UDP = "local_udp"
 BACKEND_CLOUD = "cloud"
 BACKEND_IR = "ir"
+BACKEND_MATTER = "matter"
 
 SETUP_MODE_LOCAL_UDP = "local_udp"
 SETUP_MODE_HYBRID = "hybrid"
 SETUP_MODE_CLOUD = "cloud"
 SETUP_MODE_IR = "ir"
+SETUP_MODE_MATTER = "matter"
+
+HYBRID_TIER_OFFLINE = "offline"
+HYBRID_TIER_CLOUD_ASSISTED = "cloud_assisted"
+HYBRID_TIER_CLOUD_CONNECTED = "cloud_connected"
 
 HYBRID_SUBMODE_AUTO = "auto"
 HYBRID_SUBMODE_MANUAL = "manual"

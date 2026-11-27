@@ -37,13 +37,19 @@ from .const import (
     CONF_CONTROLLER_ID,
     DEFAULT_CONTROLLER_ID,
     CONF_MODEL_CODE,
+    CONF_MATTER_ENTITY_ID,
+    CONF_HYBRID_TIER,
+    CONF_ENABLE_DEEP_DIAGNOSTICS,
     SETUP_MODE_LOCAL_UDP,
     SETUP_MODE_CLOUD,
     SETUP_MODE_HYBRID,
     SETUP_MODE_IR,
+    SETUP_MODE_MATTER,
     BACKEND_LOCAL_UDP,
     BACKEND_CLOUD,
     BACKEND_IR,
+    BACKEND_MATTER,
+    HYBRID_TIER_OFFLINE,
     DOMAIN,
 )
 from .utils import (
@@ -211,25 +217,34 @@ def build_hybrid_devices_schema(
     supports_udp: bool = True,
     default_ip: str = "",
     default_controller: str = DEFAULT_CONTROLLER_ID,
+    offline_only: bool = False,
 ) -> vol.Schema:
     """Schema for Hybrid control with primary and secondary failover."""
     backend_options = [
-        selector.SelectOptionDict(value="cloud", label="Cloud MQTT"),
-        selector.SelectOptionDict(value="ir", label="Infrared Blaster"),
+        selector.SelectOptionDict(value="matter", label="Matter"),
+        selector.SelectOptionDict(value="ir", label="IR Blaster"),
     ]
+    if not offline_only:
+        backend_options.insert(0, selector.SelectOptionDict(value="cloud", label="Cloud MQTT"))
     if supports_udp:
-        backend_options.insert(0, selector.SelectOptionDict(value="local_udp", label="Local UDP (LAN)"))
+        backend_options.insert(0, selector.SelectOptionDict(value="local_udp", label="Local UDP"))
 
     secondary_options = [
-        selector.SelectOptionDict(value="none", label="None (Single Transport Only)"),
-        selector.SelectOptionDict(value="cloud", label="Cloud MQTT"),
-        selector.SelectOptionDict(value="ir", label="Infrared Blaster"),
+        selector.SelectOptionDict(value="none", label="None (Single Connection Only)"),
+        selector.SelectOptionDict(value="matter", label="Matter"),
+        selector.SelectOptionDict(value="ir", label="IR Blaster"),
     ]
+    if not offline_only:
+        secondary_options.insert(1, selector.SelectOptionDict(value="cloud", label="Cloud MQTT"))
     if supports_udp:
-        secondary_options.insert(1, selector.SelectOptionDict(value="local_udp", label="Local UDP (LAN)"))
+        secondary_options.insert(1, selector.SelectOptionDict(value="local_udp", label="Local UDP"))
 
-    primary_default = "local_udp" if supports_udp else "cloud"
-    secondary_default = "cloud" if supports_udp else "none"
+    if offline_only:
+        primary_default = "local_udp" if supports_udp else "ir"
+        secondary_default = "ir" if supports_udp else "none"
+    else:
+        primary_default = "local_udp" if supports_udp else "cloud"
+        secondary_default = "cloud" if supports_udp else "none"
 
     fields: dict[Any, Any] = {
         vol.Optional(CONF_PRIMARY_BACKEND, default=primary_default): selector.SelectSelector(
@@ -247,7 +262,7 @@ def build_hybrid_devices_schema(
         vol.Optional(CONF_HYBRID_SUBMODE, default="auto"): selector.SelectSelector(
             selector.SelectSelectorConfig(
                 options=[
-                    selector.SelectOptionDict(value="auto", label="Automatic Failover (Switch to secondary transport on outage)"),
+                    selector.SelectOptionDict(value="auto", label="Automatic Failover (Switch to secondary connection on outage)"),
                     selector.SelectOptionDict(value="manual", label="Manual Control"),
                 ],
                 mode=selector.SelectSelectorMode.DROPDOWN,
@@ -265,6 +280,9 @@ def build_hybrid_devices_schema(
     fields.update(
         {
             vol.Optional(CONF_MQTT_TOPIC): selector.TextSelector(),
+            vol.Optional(CONF_MATTER_ENTITY_ID): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="climate")
+            ),
             vol.Optional(CONF_BLASTER_ENTITY_ID): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["infrared", "remote"])
             ),
@@ -545,11 +563,231 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: Choose setup mode."""
+        """Step 1: Choose top-level setup mode (Online Only, Local Only, or Hybrid)."""
         return self.async_show_menu(
             step_id="user",
-            menu_options=["hybrid", "ir_device", "local_udp", "cloud"]
+            menu_options=["cloud", "local_only", "hybrid_menu"],
         )
+
+    async def async_step_local_only(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Local Only submenu: Local UDP, IR Blaster, or Matter."""
+        self._hybrid_tier = ""
+        return self.async_show_menu(
+            step_id="local_only",
+            menu_options=["local_udp", "ir_device", "matter"],
+        )
+
+    async def async_step_hybrid_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Hybrid submenu: Cloud Hybrid or Local Hybrid."""
+        return self.async_show_menu(
+            step_id="hybrid_menu",
+            menu_options=["hybrid", "hybrid_local_menu"],
+        )
+
+    async def async_step_hybrid_local_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Local Hybrid submenu: Cloud-Assisted UDP Discovery or Manual Entry."""
+        return self.async_show_menu(
+            step_id="hybrid_local_menu",
+            menu_options=["hybrid_local_auto", "hybrid_offline"],
+        )
+
+    async def async_step_hybrid_local_auto(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """One-time cloud login to fetch UDP keys, then configure Local Hybrid failover."""
+        self._hybrid_tier = HYBRID_TIER_OFFLINE
+        return await self.async_step_local_udp_auto(user_input)
+
+    async def async_step_matter(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Matter-Only AC setup (entity-merging by device_id)."""
+        if user_input is not None:
+            matter_id = str(user_input[CONF_MATTER_ENTITY_ID]).strip()
+            name = str(user_input.get("name") or "").strip()
+            if not name and self.hass.states.get(matter_id):
+                name = self.hass.states.get(matter_id).attributes.get("friendly_name", "") or "Panasonic Matter AC"
+            name = name or "Panasonic Matter AC"
+            dev_id = f"matter_{matter_id.replace('climate.', '')}"
+            await self.async_set_unique_id(dev_id)
+            self._abort_if_unique_id_configured()
+            options: dict[str, Any] = {
+                CONF_SETUP_MODE: SETUP_MODE_MATTER,
+                CONF_PRIMARY_BACKEND: BACKEND_MATTER,
+                CONF_SECONDARY_BACKEND: "none",
+                CONF_MATTER_ENTITY_ID: matter_id,
+            }
+            if user_input.get(CONF_ROOM_TEMP_SENSOR):
+                options[CONF_ROOM_TEMP_SENSOR] = user_input[CONF_ROOM_TEMP_SENSOR]
+            return self.async_create_entry(
+                title=name,
+                data={
+                    "device_id": dev_id,
+                    "name": name,
+                    CONF_SETUP_MODE: SETUP_MODE_MATTER,
+                    CONF_MATTER_ENTITY_ID: matter_id,
+                    CONF_PRIMARY_BACKEND: BACKEND_MATTER,
+                    CONF_SECONDARY_BACKEND: "none",
+                    "is_ir_only": False,
+                },
+                options=options,
+            )
+
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_MATTER_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="climate")
+                ),
+                vol.Optional("name"): selector.TextSelector(),
+                vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+                ),
+            }
+        )
+        return self.async_show_form(step_id="matter", data_schema=schema)
+
+    async def async_step_hybrid_offline(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Offline Hybrid setup combining Local UDP, Matter, and/or IR without Cloud."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            primary = user_input[CONF_PRIMARY_BACKEND]
+            secondary = user_input[CONF_SECONDARY_BACKEND]
+            name = str(user_input.get("name") or "Panasonic Hybrid AC").strip()
+            matter_id = str(user_input.get(CONF_MATTER_ENTITY_ID) or "").strip()
+            blaster_id = str(user_input.get(CONF_BLASTER_ENTITY_ID) or "").strip()
+            udp_key = str(user_input.get(CONF_UDP_CONTROL_KEY) or "").strip()
+            udp_iv = str(user_input.get(CONF_UDP_CONTROL_IV) or "").strip()
+            dev_ip = str(user_input.get(CONF_DEVICE_IP) or "").strip()
+            dev_mac = str(user_input.get(CONF_DEVICE_MAC) or "").strip()
+            clean_mac = dev_mac.replace(":", "").replace("-", "").lower()
+
+            if primary == secondary:
+                errors[CONF_SECONDARY_BACKEND] = "cannot_connect"
+            if BACKEND_MATTER in (primary, secondary) and not matter_id:
+                errors[CONF_MATTER_ENTITY_ID] = "cannot_connect"
+            if BACKEND_IR in (primary, secondary) and not blaster_id:
+                errors[CONF_BLASTER_ENTITY_ID] = "blaster_required_for_ir"
+            if BACKEND_LOCAL_UDP in (primary, secondary):
+                if not dev_ip:
+                    errors[CONF_DEVICE_IP] = "invalid_ip"
+                else:
+                    try:
+                        ip_obj = ipaddress.ip_address(dev_ip)
+                        if not isinstance(ip_obj, ipaddress.IPv4Address):
+                            errors[CONF_DEVICE_IP] = "invalid_ip"
+                    except ValueError:
+                        errors[CONF_DEVICE_IP] = "invalid_ip"
+                if not udp_key:
+                    errors[CONF_UDP_CONTROL_KEY] = "invalid_auth"
+                else:
+                    try:
+                        if len(bytes.fromhex(udp_key)) != 32:
+                            errors[CONF_UDP_CONTROL_KEY] = "invalid_key"
+                    except (ValueError, TypeError):
+                        errors[CONF_UDP_CONTROL_KEY] = "invalid_key"
+                if not udp_iv:
+                    errors[CONF_UDP_CONTROL_IV] = "invalid_auth"
+                else:
+                    try:
+                        if len(bytes.fromhex(udp_iv)) != 16:
+                            errors[CONF_UDP_CONTROL_IV] = "invalid_iv"
+                    except (ValueError, TypeError):
+                        errors[CONF_UDP_CONTROL_IV] = "invalid_iv"
+
+            if not errors:
+                if clean_mac or (
+                    ("udp" in (primary, secondary))
+                    and str(user_input.get("device_id") or "").strip()
+                ):
+                    existing_ids, existing_macs = _get_existing_device_identifiers(
+                        self._async_current_entries()
+                    )
+                    explicit_id = str(user_input.get("device_id") or "").strip()
+                    if (
+                        (clean_mac and (clean_mac.upper() in existing_macs or clean_mac in existing_ids or f"udp_{clean_mac.lower()}" in existing_ids))
+                        or (explicit_id and explicit_id in existing_ids)
+                    ):
+                        return self.async_abort(reason="already_configured")
+                dev_id = (
+                    str(user_input.get("device_id") or "").strip()
+                    or (clean_mac if clean_mac else "")
+                    or (f"matter_{matter_id.replace('climate.', '')}" if matter_id else "")
+                    or (f"udp_{dev_ip.replace('.', '_')}" if dev_ip else "")
+                    or (f"ir_{blaster_id.split('.', 1)[-1]}" if blaster_id else "")
+                    or f"offline_{primary}_{secondary}"
+                )
+                await self.async_set_unique_id(dev_id)
+                self._abort_if_unique_id_configured()
+                data: dict[str, Any] = {
+                    "device_id": dev_id,
+                    "name": name,
+                    CONF_SETUP_MODE: SETUP_MODE_HYBRID,
+                    CONF_HYBRID_TIER: HYBRID_TIER_OFFLINE,
+                    CONF_PRIMARY_BACKEND: primary,
+                    CONF_SECONDARY_BACKEND: secondary,
+                    CONF_HYBRID_SUBMODE: "auto",
+                    "is_ir_only": False,
+                }
+                if matter_id:
+                    data[CONF_MATTER_ENTITY_ID] = matter_id
+                if blaster_id:
+                    data[CONF_BLASTER_ENTITY_ID] = blaster_id
+                if udp_key and udp_iv:
+                    data[CONF_UDP_CONTROL_KEY] = udp_key
+                    data[CONF_UDP_CONTROL_IV] = udp_iv
+                if dev_ip:
+                    data[CONF_DEVICE_IP] = dev_ip
+                if dev_mac:
+                    data[CONF_DEVICE_MAC] = dev_mac.replace(":", "").replace("-", "").upper()
+                options = dict(data)
+                if user_input.get(CONF_ROOM_TEMP_SENSOR):
+                    options[CONF_ROOM_TEMP_SENSOR] = user_input[CONF_ROOM_TEMP_SENSOR]
+                return self.async_create_entry(title=name, data=data, options=options)
+
+        offline_opts = [
+            selector.SelectOptionDict(value=BACKEND_LOCAL_UDP, label="Local UDP"),
+            selector.SelectOptionDict(value=BACKEND_MATTER, label="Matter"),
+            selector.SelectOptionDict(value=BACKEND_IR, label="IR Blaster"),
+        ]
+        schema = vol.Schema(
+            {
+                vol.Required("name", default="Panasonic Hybrid AC"): selector.TextSelector(),
+                vol.Required(CONF_PRIMARY_BACKEND, default=BACKEND_LOCAL_UDP): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=offline_opts, mode=selector.SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Required(CONF_SECONDARY_BACKEND, default=BACKEND_IR): selector.SelectSelector(
+                    selector.SelectSelectorConfig(options=offline_opts, mode=selector.SelectSelectorMode.DROPDOWN)
+                ),
+                vol.Optional(CONF_MATTER_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="climate")
+                ),
+                vol.Optional(CONF_BLASTER_ENTITY_ID): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain=["infrared", "remote"])
+                ),
+                vol.Optional(CONF_DEVICE_IP): selector.TextSelector(),
+                vol.Optional(CONF_DEVICE_MAC): selector.TextSelector(),
+                vol.Optional(CONF_UDP_CONTROL_KEY): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
+                vol.Optional(CONF_UDP_CONTROL_IV): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
+                vol.Optional(CONF_ROOM_TEMP_SENSOR): selector.EntitySelector(
+                    selector.EntitySelectorConfig(domain="sensor", device_class="temperature")
+                ),
+            }
+        )
+        if user_input and hasattr(self, "add_suggested_values_to_schema"):
+            schema = self.add_suggested_values_to_schema(schema, user_input)
+        return self.async_show_form(step_id="hybrid_offline", data_schema=schema, errors=errors)
 
     async def async_step_local_udp(
         self, user_input: dict[str, Any] | None = None
@@ -722,9 +960,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._discovered_cloud_devices = new_devices
             self._current_device_index = 0
             self._per_device_options = {}
-            self._setup_mode = SETUP_MODE_LOCAL_UDP
+            is_local_hybrid = getattr(self, "_hybrid_tier", "") == HYBRID_TIER_OFFLINE
+            self._setup_mode = SETUP_MODE_HYBRID if is_local_hybrid else SETUP_MODE_LOCAL_UDP
             if len(new_devices) > 1:
                 return await self.async_step_select_devices()
+            if is_local_hybrid:
+                return await self.async_step_hybrid_devices()
             return await self.async_step_local_udp_devices()
 
         return self.async_show_form(
@@ -1344,10 +1585,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             model_parts.append(speed_test_str.lstrip(" | "))
         model_display = " | ".join(model_parts)
 
+        offline_only = getattr(self, "_hybrid_tier", "") == HYBRID_TIER_OFFLINE
         if user_input is None:
             return self.async_show_form(
                 step_id="hybrid_devices",
-                data_schema=build_hybrid_devices_schema(default_install, supports_udp=has_udp, default_ip=default_ip),
+                data_schema=build_hybrid_devices_schema(
+                    default_install,
+                    supports_udp=has_udp,
+                    default_ip=default_ip,
+                    offline_only=offline_only,
+                ),
                 description_placeholders={
                     "device_name": dev_name,
                     "model_display": model_display,
@@ -1408,6 +1655,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except ValueError:
                 errors[CONF_DEVICE_IP] = "invalid_ip"
 
+        matter_raw = user_input.get(CONF_MATTER_ENTITY_ID)
+        matter_clean = "" if (not matter_raw or str(matter_raw).lower() in ("none", "null", "")) else str(matter_raw).strip()
+        if (backend_val == BACKEND_MATTER or secondary_backend_val == BACKEND_MATTER) and not matter_clean and not errors:
+            errors[CONF_MATTER_ENTITY_ID] = "matter_entity_required"
+
         if errors:
             return self.async_show_form(
                 step_id="hybrid_devices",
@@ -1416,6 +1668,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     supports_udp=has_udp,
                     default_ip=user_input.get(CONF_DEVICE_IP, default_ip),
                     default_controller=user_input.get(CONF_CONTROLLER_ID, DEFAULT_CONTROLLER_ID),
+                    offline_only=offline_only,
                 ),
                 description_placeholders={
                     "device_name": dev_name,
@@ -1432,6 +1685,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_SETUP_MODE: SETUP_MODE_HYBRID,
             "model_code": dev_model,
         }
+        if offline_only:
+            dev_opt[CONF_HYBRID_TIER] = HYBRID_TIER_OFFLINE
+
+        matter_raw = user_input.get(CONF_MATTER_ENTITY_ID)
+        matter_clean = "" if (not matter_raw or str(matter_raw).lower() in ("none", "null", "")) else str(matter_raw).strip()
+        if matter_clean:
+            dev_opt[CONF_MATTER_ENTITY_ID] = matter_clean
 
         if blaster_val:
             dev_opt[CONF_BLASTER_ENTITY_ID] = blaster_val
@@ -1461,8 +1721,6 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             dev_opt[CONF_DEVICE_IP] = final_ip
 
         entry_data = {
-            "username": creds.get("username", ""),
-            "password": creds.get("password", ""),
             "device_id": current_dev["id"],
             "device_name": dev_name,
             "model_code": dev_model,
@@ -1477,13 +1735,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             CONF_SECONDARY_BACKEND: secondary_backend_val,
             CONF_SETUP_MODE: SETUP_MODE_HYBRID,
         }
+        if offline_only:
+            entry_data[CONF_HYBRID_TIER] = HYBRID_TIER_OFFLINE
+        else:
+            entry_data["username"] = creds.get("username", "")
+            entry_data["password"] = creds.get("password", "")
+        if CONF_MATTER_ENTITY_ID in dev_opt:
+            entry_data[CONF_MATTER_ENTITY_ID] = dev_opt[CONF_MATTER_ENTITY_ID]
 
+        uid_prefix = "local" if offline_only else creds.get("username", "").lower()
         created = getattr(self, "_created_entries", [])
         created.append({
             "title": dev_name,
             "data": entry_data,
             "options": dev_opt,
-            "unique_id": f"{creds.get('username', '').lower()}_{current_dev['id']}",
+            "unique_id": f"{uid_prefix}_{current_dev['id']}" if uid_prefix else str(current_dev["id"]),
         })
         self._created_entries = created
 
@@ -1877,19 +2143,21 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> vol.Schema:
         backend_options = []
         if supports_udp:
-            backend_options.append(selector.SelectOptionDict(value="local_udp", label="Local UDP (LAN)"))
+            backend_options.append(selector.SelectOptionDict(value="local_udp", label="Local UDP"))
         if has_cloud:
             backend_options.append(selector.SelectOptionDict(value="cloud", label="Cloud MQTT"))
-        backend_options.append(selector.SelectOptionDict(value="ir", label="Infrared Blaster"))
+        backend_options.append(selector.SelectOptionDict(value="matter", label="Matter"))
+        backend_options.append(selector.SelectOptionDict(value="ir", label="IR Blaster"))
 
         secondary_options = [
-            selector.SelectOptionDict(value="none", label="None (Single Transport Only)"),
+            selector.SelectOptionDict(value="none", label="None (Single Connection Only)"),
         ]
         if supports_udp:
-            secondary_options.append(selector.SelectOptionDict(value="local_udp", label="Local UDP (LAN)"))
+            secondary_options.append(selector.SelectOptionDict(value="local_udp", label="Local UDP"))
         if has_cloud:
             secondary_options.append(selector.SelectOptionDict(value="cloud", label="Cloud MQTT"))
-        secondary_options.append(selector.SelectOptionDict(value="ir", label="Infrared Blaster"))
+        secondary_options.append(selector.SelectOptionDict(value="matter", label="Matter"))
+        secondary_options.append(selector.SelectOptionDict(value="ir", label="IR Blaster"))
 
         primary_default = "local_udp" if supports_udp else ("cloud" if has_cloud else "ir")
 
@@ -1909,7 +2177,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional(CONF_HYBRID_SUBMODE, default="auto"): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
-                        selector.SelectOptionDict(value="auto", label="Automatic Failover (Switch to secondary transport on outage)"),
+                        selector.SelectOptionDict(value="auto", label="Automatic Failover (Switch to secondary connection on outage)"),
                         selector.SelectOptionDict(value="manual", label="Manual Control"),
                     ],
                     mode=selector.SelectSelectorMode.DROPDOWN,
@@ -1941,6 +2209,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             vol.Optional(CONF_AVAILABILITY_ENTITY_ID): selector.EntitySelector(
                 selector.EntitySelectorConfig(domain=["binary_sensor", "input_boolean", "switch", "device_tracker"])
             ),
+            vol.Optional(CONF_MATTER_ENTITY_ID): selector.EntitySelector(
+                selector.EntitySelectorConfig(domain="climate")
+            ),
+            vol.Optional(CONF_ENABLE_DEEP_DIAGNOSTICS, default=False): selector.BooleanSelector(),
             vol.Optional(CONF_INSTALL_DATE): selector.DateSelector(),
         }
         if supports_udp:
@@ -1995,6 +2267,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         current_receiver = target_opt.get(CONF_RECEIVER_ENTITY_ID, current_options.get(CONF_RECEIVER_ENTITY_ID, entry_data.get(CONF_RECEIVER_ENTITY_ID, "")))
         current_temp_sensor = target_opt.get(CONF_ROOM_TEMP_SENSOR, current_options.get(CONF_ROOM_TEMP_SENSOR, entry_data.get(CONF_ROOM_TEMP_SENSOR, "")))
         current_avail = target_opt.get(CONF_AVAILABILITY_ENTITY_ID, current_options.get(CONF_AVAILABILITY_ENTITY_ID, entry_data.get(CONF_AVAILABILITY_ENTITY_ID, "")))
+        current_matter = target_opt.get(CONF_MATTER_ENTITY_ID, current_options.get(CONF_MATTER_ENTITY_ID, entry_data.get(CONF_MATTER_ENTITY_ID, "")))
+        current_deep_diag = bool(target_opt.get(CONF_ENABLE_DEEP_DIAGNOSTICS, current_options.get(CONF_ENABLE_DEEP_DIAGNOSTICS, entry_data.get(CONF_ENABLE_DEEP_DIAGNOSTICS, False))))
         current_ir_fmt = target_opt.get(CONF_IR_FORMAT, current_options.get(CONF_IR_FORMAT, entry_data.get(CONF_IR_FORMAT, "auto")))
         current_backend = target_opt.get(CONF_PRIMARY_BACKEND, current_options.get(CONF_PRIMARY_BACKEND, "cloud"))
         current_secondary = target_opt.get(CONF_SECONDARY_BACKEND, current_options.get(CONF_SECONDARY_BACKEND, "none"))
@@ -2077,6 +2351,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_ROOM_TEMP_SENSOR: current_temp_sensor,
                 CONF_AVAILABILITY_TOPIC: current_avail_topic,
                 CONF_AVAILABILITY_ENTITY_ID: current_avail,
+                CONF_MATTER_ENTITY_ID: current_matter,
+                CONF_ENABLE_DEEP_DIAGNOSTICS: current_deep_diag,
                 CONF_IR_FORMAT: current_ir_fmt,
                 CONF_PRIMARY_BACKEND: current_backend,
                 CONF_SECONDARY_BACKEND: current_secondary,
@@ -2140,6 +2416,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         temp_sensor_val = "" if (temp_sensor_raw is None or str(temp_sensor_raw).lower() in ("none", "null", "")) else str(temp_sensor_raw).strip()
         avail_raw = user_input.get(CONF_AVAILABILITY_ENTITY_ID)
         avail_val = "" if (avail_raw is None or str(avail_raw).lower() in ("none", "null", "")) else str(avail_raw).strip()
+        matter_raw = user_input.get(CONF_MATTER_ENTITY_ID)
+        matter_val = "" if (matter_raw is None or str(matter_raw).lower() in ("none", "null", "")) else str(matter_raw).strip()
+        deep_diag_val = bool(user_input.get(CONF_ENABLE_DEEP_DIAGNOSTICS, False))
         ir_fmt_val = user_input.get(CONF_IR_FORMAT, "auto")
         backend_val = user_input.get(CONF_PRIMARY_BACKEND, "cloud")
         secondary_backend_val = user_input.get(CONF_SECONDARY_BACKEND, "none")
@@ -2161,6 +2440,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         if (backend_val == "ir" or secondary_backend_val == "ir") and not blaster_val and not errors:
             errors[CONF_BLASTER_ENTITY_ID] = "blaster_required_for_ir"
+        if (backend_val == BACKEND_MATTER or secondary_backend_val == BACKEND_MATTER) and not matter_val and not errors:
+            errors[CONF_MATTER_ENTITY_ID] = "matter_entity_required"
+        if matter_val and not errors and self.hass is not None:
+            from homeassistant.helpers import entity_registry as er
+
+            ent_reg = er.async_get(self.hass)
+            reg_entry = ent_reg.async_get(matter_val) if ent_reg else None
+            if reg_entry and reg_entry.platform == DOMAIN:
+                errors[CONF_MATTER_ENTITY_ID] = "invalid_entity"
 
         if has_udp and user_input.get(CONF_DEVICE_IP):
             ip_candidate = str(user_input.get(CONF_DEVICE_IP)).strip()
@@ -2243,6 +2531,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         new_options[CONF_RECEIVER_ENTITY_ID] = receiver_val
         new_options[CONF_ROOM_TEMP_SENSOR] = temp_sensor_val
         new_options[CONF_AVAILABILITY_ENTITY_ID] = avail_val
+        if matter_val:
+            new_options[CONF_MATTER_ENTITY_ID] = matter_val
+        else:
+            new_options[CONF_MATTER_ENTITY_ID] = ""
+        new_options[CONF_ENABLE_DEEP_DIAGNOSTICS] = deep_diag_val
         new_options[CONF_IR_FORMAT] = ir_fmt_val
         if model_code_val:
             new_options["model_code"] = model_code_val
@@ -2288,6 +2581,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             dev_entry[CONF_RECEIVER_ENTITY_ID] = receiver_val
             dev_entry[CONF_ROOM_TEMP_SENSOR] = temp_sensor_val
             dev_entry[CONF_AVAILABILITY_ENTITY_ID] = avail_val
+            if matter_val:
+                dev_entry[CONF_MATTER_ENTITY_ID] = matter_val
+            else:
+                dev_entry.pop(CONF_MATTER_ENTITY_ID, None)
+            dev_entry[CONF_ENABLE_DEEP_DIAGNOSTICS] = deep_diag_val
             dev_entry[CONF_IR_FORMAT] = ir_fmt_val
             if model_code_val:
                 dev_entry["model_code"] = model_code_val

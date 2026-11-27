@@ -58,6 +58,13 @@ async def async_setup_entry(
 
     for device in devices:
         coordinator = coordinators.get(device.id)
+        t_caps = coordinator.get_transport_caps() if coordinator and hasattr(coordinator, "get_transport_caps") else {}
+        if isinstance(t_caps, dict) and t_caps.get("is_matter_only_configured") is True:
+            for suffix in ("display", "buzzer", "nanoe", "hybrid_submode", "active_backend"):
+                eid = ent_reg.async_get_entity_id("switch", DOMAIN, f"{device.id}_{suffix}")
+                if eid:
+                    ent_reg.async_remove(eid)
+            continue
 
         # Display Switch gating & orphan cleanup
         # If the device supports Night display, display control is handled via select.panasonic_ac_display_mode

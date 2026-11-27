@@ -91,6 +91,11 @@ class MirAIeDeviceCoordinator:
         secondary_backend: Optional[str] = None,
         tertiary_backend: Optional[str] = None,
         device: Optional[Any] = None,
+        matter_entity_id: Optional[str] = None,
+        setup_mode: str = "",
+        hybrid_tier: str = "",
+        enable_deep_diagnostics: bool = False,
+        has_cloud: bool = True,
     ):
         self.hass = hass
         resolved_entry_id = entry_id or subentry_id or ""
@@ -112,6 +117,11 @@ class MirAIeDeviceCoordinator:
         self.availability_topic = availability_topic
         self.ir_format = ir_format
         self.controller_id = controller_id
+        self.matter_entity_id = matter_entity_id
+        self.setup_mode = setup_mode
+        self.hybrid_tier = hybrid_tier
+        self.enable_deep_diagnostics = enable_deep_diagnostics
+        self.has_cloud = has_cloud
         if self.device:
             setattr(self.device, "controller_id", self.controller_id)
         self.hub: Any = None
@@ -138,6 +148,8 @@ class MirAIeDeviceCoordinator:
         # Determine initial control source based on configured transport
         if self.primary_backend == "local_udp":
             init_origin = "Local UDP"
+        elif self.primary_backend == "matter":
+            init_origin = "Matter"
         elif self.has_wifi:
             init_origin = "Cloud"
         else:
@@ -187,6 +199,56 @@ class MirAIeDeviceCoordinator:
             getattr(self.device, "supports_local_udp", False)
             and getattr(self.device, "udp_transport", None)
         )
+
+    @property
+    def has_matter(self) -> bool:
+        """Return True if a Matter climate entity is configured."""
+        return bool(self.matter_entity_id)
+
+    @property
+    def is_matter_available(self) -> bool:
+        """Return True if the configured Matter entity is online."""
+        if not self.matter_entity_id or not getattr(self, "hass", None):
+            return False
+        st = self.hass.states.get(self.matter_entity_id)
+        return bool(st and st.state not in ("unavailable", "unknown"))
+
+    def get_transport_caps(self) -> Dict[str, Any]:
+        """Return centralized transport capability matrix for this device."""
+        from .utils import get_transport_capabilities
+
+        return get_transport_capabilities(self.device, self)
+
+    async def async_dispatch_matter_command(
+        self,
+        *,
+        power: Optional[str] = None,
+        hvac_mode: Optional[str] = None,
+        temperature: Optional[float] = None,
+        fan_mode: Optional[str] = None,
+    ) -> bool:
+        """Dispatch core commands via the merged Matter entity bridge."""
+        if not self.matter_entity_id:
+            return False
+        from .matter_bridge import async_send_matter_command
+
+        try:
+            ok = await async_send_matter_command(
+                self.hass,
+                self.matter_entity_id,
+                power=power,
+                hvac_mode=hvac_mode,
+                temperature=temperature,
+                fan_mode=fan_mode,
+            )
+        except Exception as err:
+            LOGGER.warning("Matter command dispatch failed for %s: %s", self.matter_entity_id, err)
+            return False
+        if ok:
+            self._last_requested_ir_params = None
+            self.state["last_controlled_by"] = "Matter"
+            self._notify_listeners()
+        return ok
 
     @property
     def is_esphome_2026_10_or_newer(self) -> bool:
@@ -254,17 +316,30 @@ class MirAIeDeviceCoordinator:
         if not model_caps or not isinstance(model_caps, dict):
             return
         self.model_capabilities = model_caps
-        ctrl_caps = model_caps.get("controlCapabilities", {})
-        if "BuzzerControl" in ctrl_caps:
+
+        def _cap_names(raw: Any) -> set[str]:
+            if isinstance(raw, dict):
+                return set(raw.keys())
+            if isinstance(raw, list):
+                return {
+                    str(item.get("capability"))
+                    for item in raw
+                    if isinstance(item, dict) and item.get("capability")
+                }
+            return set()
+
+        ctrl_names = _cap_names(model_caps.get("controlCapabilities"))
+        disp_names = _cap_names(model_caps.get("displayCapabilities"))
+        all_names = ctrl_names | disp_names
+
+        if "BuzzerControl" in all_names:
             self.capabilities["has_buzzer"] = True
-        else:
+        elif "has_buzzer" not in self.capabilities:
             self.capabilities["has_buzzer"] = False
 
-        if "HorizontalVaneControl" in ctrl_caps:
+        if {"HorizontalSwing", "HorizontalVaneControl"} & all_names:
             self.capabilities["h_vane_enabled"] = 1
-        elif "HorizontalVaneControl" in model_caps.get("displayCapabilities", {}):
-            self.capabilities["h_vane_enabled"] = 1
-        elif ctrl_caps:
+        elif ctrl_names and self.capabilities.get("swing_type") != "4-way":
             self.capabilities["h_vane_enabled"] = 0
 
         self._notify_listeners()
@@ -811,6 +886,31 @@ class MirAIeDeviceCoordinator:
 
         from homeassistant.helpers.event import async_track_state_change_event
 
+        if self.matter_entity_id and hasattr(self.hass, "states"):
+            from .matter_bridge import discover_matter_sibling_entities
+
+            self._sync_from_matter_state()
+            siblings = discover_matter_sibling_entities(self.hass, self.matter_entity_id)
+            matter_eids = [
+                eid
+                for eid in (
+                    self.matter_entity_id,
+                    siblings.get("power_switch"),
+                    siblings.get("fan"),
+                    siblings.get("outdoor_temp"),
+                )
+                if eid
+            ]
+            unsub_matter = async_track_state_change_event(
+                self.hass, matter_eids, self._async_matter_state_changed
+            )
+            self._unsub_event_bus.append(unsub_matter)
+            LOGGER.info(
+                "Device %s: Registered Matter state listener on %s",
+                self.device_id,
+                matter_eids,
+            )
+
         if self.blaster_entity_id:
             if is_mqtt_topic(self.blaster_entity_id):
                 self._is_esphome_blaster = False
@@ -1347,6 +1447,43 @@ class MirAIeDeviceCoordinator:
                 await device.refresh()
             except Exception as cloud_err:
                 LOGGER.debug("Device %s: Cloud post-IR verification failed: %s", self.device_id, cloud_err)
+
+    def _sync_from_matter_state(self) -> None:
+        """Synchronize coordinator state from the linked Matter entity and its siblings."""
+        if not self.matter_entity_id or not getattr(self, "hass", None):
+            return
+        from .matter_bridge import get_matter_state
+
+        m_state = get_matter_state(self.hass, self.matter_entity_id)
+        if not m_state or not m_state.get("is_online"):
+            return
+        now = time.monotonic()
+        last_ir_ts = max(
+            getattr(self, "_last_ir_command_timestamp", 0.0),
+            getattr(self, "_last_physical_rx_timestamp", 0.0),
+        )
+        in_ir_grace_window = (last_ir_ts > 0.0) and (0.0 <= (now - last_ir_ts) < 8.0)
+        if not in_ir_grace_window:
+            is_on = bool(m_state.get("is_on"))
+            self.state["power"] = "on" if is_on else "off"
+            if m_state.get("hvac_mode"):
+                self.state["mode"] = m_state["hvac_mode"]
+            if m_state.get("target_temp") is not None:
+                self.state["temperature"] = m_state["target_temp"]
+            if m_state.get("fan_mode"):
+                self.state["fan_speed"] = m_state["fan_mode"]
+            if self.setup_mode == "matter" or self.primary_backend == "matter":
+                self.state["last_controlled_by"] = "Matter"
+        if m_state.get("current_temp") is not None:
+            self.state["room_temperature"] = m_state["current_temp"]
+
+    @callback
+    def _async_matter_state_changed(self, event: Any) -> None:
+        """Handle state updates from the linked Matter entity or its siblings."""
+        if self._unloaded:
+            return
+        self._sync_from_matter_state()
+        self._notify_listeners()
 
     @callback
     def async_unload(self) -> None:

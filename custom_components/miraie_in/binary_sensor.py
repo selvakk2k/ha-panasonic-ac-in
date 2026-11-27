@@ -49,6 +49,8 @@ async def async_setup_entry(
 
     for device in devices:
         coordinator = coordinators.get(device.id)
+        t_caps = coordinator.get_transport_caps() if coordinator and hasattr(coordinator, "get_transport_caps") else {}
+        is_matter_only = isinstance(t_caps, dict) and t_caps.get("is_matter_only_configured") is True
         has_wifi = getattr(coordinator, "has_wifi", True) if coordinator else getattr(getattr(device, "details", None), "has_wifi", True)
         if setup_mode == SETUP_MODE_CLOUD:
             has_udp = False
@@ -59,7 +61,7 @@ async def async_setup_entry(
                 getattr(getattr(device, "details", None), "udp_control_key", None)
             )
 
-        if not is_ir_entry and has_wifi:
+        if not is_ir_entry and not is_matter_only and has_wifi:
             entities.append(MirAIeFilterCleanBinarySensor(device, coordinator))
             entities.append(MirAIeCoilCleanBinarySensor(device, coordinator))
             if coordinator:

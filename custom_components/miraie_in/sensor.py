@@ -1,6 +1,7 @@
 import asyncio
 import aiohttp
 import re
+import voluptuous as vol
 from abc import ABC, abstractmethod
 from typing import Any
 from collections.abc import Sequence, Mapping
@@ -23,9 +24,20 @@ try:
 except ImportError:
     MEAN_TYPE_NONE: Any = 0
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy, UnitOfTemperature, SIGNAL_STRENGTH_DECIBELS_MILLIWATT
+import homeassistant.const as ha_const
+from homeassistant.const import (
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    UnitOfEnergy,
+    UnitOfFrequency,
+    UnitOfPower,
+    UnitOfTemperature,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+try:
+    from homeassistant.helpers import entity_platform
+except ImportError:
+    entity_platform = None  # type: ignore[assignment]
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity import EntityCategory
 from homeassistant.helpers.restore_state import RestoreEntity
@@ -153,6 +165,7 @@ class MirAIeYesterdayEnergySensor(MirAIeEnergySensor):
     def __init__(self, hub: MirAIeHub, device: MirAIeDevice):
         super().__init__(hub, device)
         self._attr_translation_key = "yesterday_consumption"
+        self._attr_entity_registry_enabled_default = False
 
     @property
     def period_type(self) -> ConsumptionPeriodType:
@@ -178,6 +191,12 @@ class MirAIeTodayEnergySensor(MirAIeEnergySensor):
     def __init__(self, hub: MirAIeHub, device: MirAIeDevice):
         super().__init__(hub, device)
         self._attr_translation_key = "current_consumption"
+        self._cloud_anchor_kwh: float = 0.0
+        self._est_at_anchor_kwh: float = 0.0
+        self._anchor_date: date | None = None
+        self._last_queried_date: date | None = None
+        self._midnight_est_baseline_kwh: float | None = None
+        self._midnight_baseline_date: date | None = None
 
     @property
     def period_type(self) -> ConsumptionPeriodType:
@@ -190,13 +209,78 @@ class MirAIeTodayEnergySensor(MirAIeEnergySensor):
     async def get_energy_consumption(self) -> float | None:
         """Fetch today's (live, rolling) energy consumption data so far."""
         today = dt_util.now().date()
+        self._last_queried_date = today
         return await self._async_fetch_consumption_safe(today.strftime("%d%m%Y"))
+
+    @property
+    def native_value(self) -> float | None:
+        """Return Cloud-anchored today's kWh plus real-time estimator delta since anchor."""
+        today = dt_util.now().date()
+        st = getattr(self.device, "status", None)
+        est_kwh = float(getattr(st, "estimated_energy_kwh", 0.0) or 0.0) if st else 0.0
+        delta = est_kwh if est_kwh < self._est_at_anchor_kwh else (est_kwh - self._est_at_anchor_kwh)
+        if self._midnight_baseline_date is not None and self._midnight_baseline_date != today:
+            self._midnight_baseline_date = today
+            self._midnight_est_baseline_kwh = est_kwh
+        elif self._anchor_date is None and self._midnight_baseline_date is None and est_kwh > 0.0:
+            self._midnight_baseline_date = today
+            self._midnight_est_baseline_kwh = 0.0
+
+        if self._anchor_date is not None and self._anchor_date != today:
+            if self._midnight_baseline_date != today:
+                self._midnight_baseline_date = today
+                self._midnight_est_baseline_kwh = est_kwh
+            new_day_delta = (
+                est_kwh
+                if est_kwh < (self._midnight_est_baseline_kwh or 0.0)
+                else (est_kwh - (self._midnight_est_baseline_kwh or 0.0))
+            )
+            return round(new_day_delta, 3)
+
+        if self._anchor_date is None and self._midnight_est_baseline_kwh is not None:
+            new_day_delta = (
+                est_kwh
+                if est_kwh < self._midnight_est_baseline_kwh
+                else (est_kwh - self._midnight_est_baseline_kwh)
+            )
+            return round(new_day_delta, 3)
+
+        if self._cloud_anchor_kwh > 0.0 or delta > 0.0:
+            return round(self._cloud_anchor_kwh + delta, 3)
+        return self._attr_native_value
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        def _safe_device_cb(*args, **kwargs) -> None:
+            safe_async_write_ha_state(self)
+
+        self._device_callback = _safe_device_cb
+        self.device.register_callback(self._device_callback)
+
+    async def async_will_remove_from_hass(self):
+        if hasattr(self, "_device_callback"):
+            self.device.remove_callback(self._device_callback)
+        return await super().async_will_remove_from_hass()
 
     async def async_update(self):
         """Update today's energy consumption sensor state and sync recorder statistic."""
         updated = await super().async_update()
         if updated and self._attr_native_value is not None and isinstance(self._attr_native_value, (int, float, str)):
-            await self._async_sync_today_statistic(float(self._attr_native_value))
+            cloud_val = float(self._attr_native_value)
+            today = dt_util.now().date()
+            if self._last_queried_date is not None and self._last_queried_date != today:
+                return
+            st = getattr(self.device, "status", None)
+            est_kwh = float(getattr(st, "estimated_energy_kwh", 0.0) or 0.0) if st else 0.0
+            if self._anchor_date == today:
+                delta = est_kwh if est_kwh < self._est_at_anchor_kwh else (est_kwh - self._est_at_anchor_kwh)
+                current_blended = self._cloud_anchor_kwh + delta
+                self._cloud_anchor_kwh = max(cloud_val, current_blended)
+            else:
+                self._cloud_anchor_kwh = cloud_val
+                self._anchor_date = today
+            self._est_at_anchor_kwh = est_kwh
+            await self._async_sync_today_statistic(self._cloud_anchor_kwh)
 
     async def _async_sync_today_statistic(self, today_val: float) -> None:
         """Sync today's live energy consumption to recorder statistics DB."""
@@ -260,6 +344,7 @@ class MirAIeWeeklyEnergySensor(MirAIeEnergySensor):
     def __init__(self, hub: MirAIeHub, device: MirAIeDevice):
         super().__init__(hub, device)
         self._attr_translation_key = "weekly_consumption"
+        self._attr_entity_registry_enabled_default = False
 
     @property
     def period_type(self) -> ConsumptionPeriodType:
@@ -281,6 +366,7 @@ class MirAIeMonthlyEnergySensor(MirAIeEnergySensor):
     def __init__(self, hub: MirAIeHub, device: MirAIeDevice):
         super().__init__(hub, device)
         self._attr_translation_key = "monthly_consumption"
+        self._attr_entity_registry_enabled_default = False
 
     @property
     def period_type(self) -> ConsumptionPeriodType:
@@ -415,12 +501,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
             poll_sensors = list(energy_sensors)
 
             async def update_sensors(now=None):
-                # Gather updates concurrently to avoid sequential HTTP requests
+                active = [s for s in poll_sensors if getattr(s, "hass", None) is not None]
+                if not active:
+                    return
                 await asyncio.gather(
-                    *(sensor.async_update() for sensor in poll_sensors),
+                    *(sensor.async_update() for sensor in active),
                     return_exceptions=True
                 )
-                for sensor in poll_sensors:
+                for sensor in active:
                     sensor.async_write_ha_state()  # Ensure HA is notified of new data
 
             cancel_interval = async_track_time_interval(hass, update_sensors, timedelta(minutes=30))
@@ -436,16 +524,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
                     ent_reg.async_remove(entity_id)
                     LOGGER.info("Cleaned up orphaned energy sensor %s for offline local UDP entry", entity_id)
 
-    # 2. Setup Non-Polling Sensors (updated via device callback pushed via MQTT)
+    # 2. Setup Non-Polling Sensors (updated via device callback pushed via MQTT / Local UDP)
     pushed_sensors: list[SensorEntity] = []
     for device in devices:
         coordinator = coordinators.get(device.id)
-        if not is_ir_entry and (not coordinator or coordinator.has_wifi):
+        t_caps = coordinator.get_transport_caps() if coordinator and hasattr(coordinator, "get_transport_caps") else {}
+        is_matter_only = isinstance(t_caps, dict) and t_caps.get("is_matter_only_configured") is True
+        deep_diag = getattr(coordinator, "enable_deep_diagnostics", False) is True if coordinator else False
+        ent_reg = er.async_get(hass)
+        disabler_cls = getattr(er, "RegistryEntryDisabler", None)
+        if ent_reg and disabler_cls is not None:
+            diag_keys = [spec[1] for spec in _DIAG_SENSOR_SPECS] + ["model_capabilities"]
+            for d_key in diag_keys:
+                eid = ent_reg.async_get_entity_id("sensor", DOMAIN, f"{device.id}_{d_key}")
+                if not eid:
+                    continue
+                reg_entry = ent_reg.async_get(eid)
+                if not reg_entry:
+                    continue
+                cur_disabler = getattr(reg_entry, "disabled_by", None)
+                if deep_diag and cur_disabler == disabler_cls.INTEGRATION:
+                    ent_reg.async_update_entity(eid, disabled_by=None)
+                elif not deep_diag and cur_disabler is None:
+                    ent_reg.async_update_entity(eid, disabled_by=disabler_cls.INTEGRATION)
+        if not is_ir_entry and not is_matter_only and (not coordinator or coordinator.has_wifi):
             pushed_sensors.append(MirAIeRoomTemperatureSensor(device))
             pushed_sensors.append(MirAIeErrorCodeSensor(device, coordinator))
-        pushed_sensors.append(MirAIeModelCapabilitiesSensor(device, coordinator))
+            pushed_sensors.append(MirAIeEstimatedPowerSensor(device))
+            for attr_name, trans_key, dev_cls, unit, state_cls, icon in _DIAG_SENSOR_SPECS:
+                pushed_sensors.append(
+                    MirAIeDiagSensor(
+                        device, attr_name, trans_key, dev_cls, unit, state_cls, icon,
+                        enabled_default=deep_diag,
+                    )
+                )
+        pushed_sensors.append(MirAIeModelCapabilitiesSensor(device, coordinator, enabled_default=deep_diag))
 
-        if not is_ir_entry and (not coordinator or coordinator.has_wifi):
+        if not is_ir_entry and not is_matter_only and (not coordinator or coordinator.has_wifi):
             pushed_sensors.append(MirAIeWifiSignalSensor(device))
 
         if coordinator:
@@ -453,6 +568,136 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
 
     async_add_entities(pushed_sensors)
 
+
+
+_DIAG_SENSOR_SPECS = (
+    (
+        "compressor_frequency_hz",
+        "compressor_frequency",
+        getattr(SensorDeviceClass, "FREQUENCY", None),
+        getattr(UnitOfFrequency, "HERTZ", "Hz"),
+        SensorStateClass.MEASUREMENT,
+        "mdi:sine-wave",
+    ),
+    (
+        "evaporator_coil_temp_c",
+        "evaporator_coil_temp",
+        SensorDeviceClass.TEMPERATURE,
+        UnitOfTemperature.CELSIUS,
+        SensorStateClass.MEASUREMENT,
+        "mdi:thermometer-lines",
+    ),
+    (
+        "outdoor_condenser_temp_c",
+        "outdoor_condenser_temp",
+        SensorDeviceClass.TEMPERATURE,
+        UnitOfTemperature.CELSIUS,
+        SensorStateClass.MEASUREMENT,
+        "mdi:sun-thermometer-outline",
+    ),
+    (
+        "fan_stage",
+        "fan_stage",
+        None,
+        None,
+        SensorStateClass.MEASUREMENT,
+        "mdi:fan",
+    ),
+    (
+        "voltage_v",
+        "voltage",
+        getattr(SensorDeviceClass, "VOLTAGE", None),
+        getattr(ha_const, "UnitOfElectricPotential", None)
+        and getattr(ha_const.UnitOfElectricPotential, "VOLT", "V")
+        or "V",
+        SensorStateClass.MEASUREMENT,
+        "mdi:flash-triangle-outline",
+    ),
+    (
+        "current_a",
+        "current",
+        getattr(SensorDeviceClass, "CURRENT", None),
+        getattr(ha_const, "UnitOfElectricCurrent", None)
+        and getattr(ha_const.UnitOfElectricCurrent, "AMPERE", "A")
+        or "A",
+        SensorStateClass.MEASUREMENT,
+        "mdi:current-ac",
+    ),
+)
+
+
+class _MirAIeDeviceCallbackSensor(SensorEntity):
+    """Shared base for non-polling sensors driven by MirAIeDevice callbacks."""
+
+    def __init__(self, device: MirAIeDevice) -> None:
+        self._attr_should_poll = False
+        self._attr_has_entity_name = True
+        self.device = device
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return build_device_info(self.device)
+
+    async def async_added_to_hass(self):
+        def _safe_device_cb(*args, **kwargs) -> None:
+            safe_async_write_ha_state(self)
+
+        self._device_callback = _safe_device_cb
+        self.device.register_callback(self._device_callback)
+
+    async def async_will_remove_from_hass(self):
+        if hasattr(self, "_device_callback"):
+            self.device.remove_callback(self._device_callback)
+
+
+class MirAIeEstimatedPowerSensor(_MirAIeDeviceCallbackSensor):
+    """Real-time estimated electrical power (W) from InverterPowerEstimator."""
+
+    def __init__(self, device: MirAIeDevice) -> None:
+        super().__init__(device)
+        self._attr_unique_id = f"{device.id}_estimated_power"
+        self._attr_translation_key = "estimated_power"
+        self._attr_device_class = SensorDeviceClass.POWER
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = UnitOfPower.WATT
+        self._attr_suggested_display_precision = 1
+        self._attr_icon = "mdi:flash"
+
+    @property
+    def native_value(self) -> float | None:
+        st = getattr(self.device, "status", None)
+        return getattr(st, "estimated_power_w", None) if st else None
+
+
+class MirAIeDiagSensor(_MirAIeDeviceCallbackSensor):
+    """Diagnostic telemetry sensor decoded from .../diag cloud MQTT frames."""
+
+    def __init__(
+        self,
+        device: MirAIeDevice,
+        attr_name: str,
+        translation_key: str,
+        device_class: SensorDeviceClass | None,
+        unit: str | None,
+        state_class: SensorStateClass | None,
+        icon: str,
+        enabled_default: bool = False,
+    ) -> None:
+        super().__init__(device)
+        self._status_attr = attr_name
+        self._attr_unique_id = f"{device.id}_{translation_key}"
+        self._attr_translation_key = translation_key
+        self._attr_device_class = device_class
+        self._attr_native_unit_of_measurement = unit
+        self._attr_state_class = state_class
+        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_entity_registry_enabled_default = enabled_default
+        self._attr_icon = icon
+
+    @property
+    def native_value(self) -> int | float | None:
+        st = getattr(self.device, "status", None)
+        return getattr(st, self._status_attr, None) if st else None
 
 
 class MirAIeRoomTemperatureSensor(SensorEntity):
@@ -625,7 +870,7 @@ class MirAIeControlSourceSensor(SensorEntity):
 class MirAIeModelCapabilitiesSensor(SensorEntity):
     """Exposes hardware model details and auto-detected capabilities from panasonic-ac-models."""
 
-    def __init__(self, device: MirAIeDevice, coordinator=None):
+    def __init__(self, device: MirAIeDevice, coordinator=None, enabled_default: bool = False):
         self._attr_should_poll = False
         self._attr_has_entity_name = True
         self._attr_unique_id = f"{device.id}_model_capabilities"
@@ -633,6 +878,7 @@ class MirAIeModelCapabilitiesSensor(SensorEntity):
         self.device = device
         self.coordinator = coordinator
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        self._attr_entity_registry_enabled_default = enabled_default
         self._attr_icon = "mdi:chip"
 
     @property

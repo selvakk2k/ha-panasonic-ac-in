@@ -139,9 +139,16 @@ def is_device_available(device: Any, coordinator: Any | None = None) -> bool:
     blaster_id = getattr(coord, "blaster_entity_id", None) if coord else None
     has_ir = bool(coord.is_ir_blaster_available) if (blaster_id and coord) else False
 
-    # 1. IR-only devices (no Wi-Fi): strictly depend on IR blaster availability
+    # 4. Matter availability: wrapped Matter climate entity is online
+    matter_entity_id = getattr(coord, "matter_entity_id", None) if coord else None
+    has_matter = False
+    if matter_entity_id and coord and getattr(coord, "hass", None):
+        m_state = coord.hass.states.get(matter_entity_id)
+        has_matter = bool(m_state and m_state.state not in ("unavailable", "unknown"))
+
+    # 1. Non-Wi-Fi devices (IR-only or Matter-only): depend on IR blaster or Matter entity availability
     if not has_wifi:
-        return has_ir
+        return bool(has_ir or has_matter)
 
     # 2. Local UDP availability: device supports UDP, transport is running, and AC is reachable
     st = getattr(device, "status", None)
@@ -157,13 +164,98 @@ def is_device_available(device: Any, coordinator: Any | None = None) -> bool:
     )
 
     # 3. Cloud MQTT availability: device is online in cloud and broker is connected
-    has_cloud = is_device_online
+    has_cloud = is_device_online and (getattr(coord, "has_cloud", True) is not False if coord else True)
     hub = getattr(coord, "hub", None) if coord else None
     broker = getattr(hub, "broker", None) if hub else None
     if broker and hasattr(broker, "connected") and not broker.connected.is_set():
         has_cloud = False
 
-    return bool(has_udp or has_cloud or has_ir)
+    return bool(has_udp or has_cloud or has_ir or has_matter)
+
+
+def parse_packed_matter_temp(value: Any) -> float | None:
+    """Decode Panasonic Matter packed LocalTemperature (e.g. 61.3 -> 30.24°C)."""
+    if value is None:
+        return None
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return None
+    if num <= 50.0:
+        return round(num, 2)
+    try:
+        from miraie_ac.utils import parse_room_temp
+
+        decoded = parse_room_temp(f"{num:.2f}", firmware_version="3.02")
+        if decoded is not None and decoded <= 50.0:
+            return decoded
+    except Exception as err:
+        LOGGER.debug("Failed to decode packed Matter temperature %r: %s", value, err)
+    return None
+
+
+def get_transport_capabilities(device: Any, coordinator: Any | None = None) -> dict[str, Any]:
+    """Return unified configured/online transport flags and feature exposure across platforms."""
+    coord = coordinator
+    setup_mode = str(getattr(coord, "setup_mode", "") or "").lower() if coord else ""
+    primary = str(getattr(coord, "primary_backend", "") or "").lower() if coord else ""
+    secondary = str(getattr(coord, "secondary_backend", "") or "").lower() if coord else ""
+    has_wifi = getattr(coord, "has_wifi", True) if coord else True
+    blaster_id = getattr(coord, "blaster_entity_id", None) if coord else None
+    matter_id = getattr(coord, "matter_entity_id", None) if coord else None
+    has_cloud_cfg = bool(getattr(coord, "has_cloud", False)) if coord else False
+    if not has_cloud_cfg and setup_mode in ("cloud", "hybrid") and getattr(coord, "hybrid_tier", "") != "offline":
+        hub = getattr(coord, "hub", None) if coord else None
+        has_cloud_cfg = bool(hub and getattr(hub, "broker", None))
+
+    supports_udp = bool(getattr(device, "supports_local_udp", False) is True)
+    udp_transport = getattr(device, "udp_transport", None)
+    udp_running = bool(supports_udp and udp_transport is not None and getattr(udp_transport, "is_running", False))
+
+    configured: set[str] = set()
+    if setup_mode == "matter" or primary == "matter" or secondary == "matter" or matter_id:
+        configured.add("matter")
+    if blaster_id or primary == "ir" or secondary == "ir" or setup_mode == "ir":
+        configured.add("ir")
+    if supports_udp or primary == "local_udp" or secondary == "local_udp" or setup_mode == "local_udp":
+        if has_wifi and setup_mode not in ("ir", "matter"):
+            configured.add("local_udp")
+    if has_cloud_cfg or primary == "cloud" or secondary == "cloud" or setup_mode == "cloud":
+        if has_wifi and setup_mode not in ("local_udp", "ir", "matter"):
+            configured.add("cloud")
+
+    st = getattr(device, "status", None)
+    is_dev_online = bool(st and getattr(st, "is_online", False))
+    hub = getattr(coord, "hub", None) if coord else None
+    broker = getattr(hub, "broker", None) if hub else None
+    broker_connected = bool(broker and getattr(broker, "connected", None) and broker.connected.is_set())
+
+    online: set[str] = set()
+    if "local_udp" in configured and udp_running and (is_dev_online or getattr(coord, "device_online", True)):
+        online.add("local_udp")
+    if "cloud" in configured and is_dev_online and broker_connected:
+        online.add("cloud")
+    if "ir" in configured and coord and getattr(coord, "is_ir_blaster_available", False):
+        online.add("ir")
+    if "matter" in configured and matter_id and coord and getattr(coord, "hass", None):
+        m_st = coord.hass.states.get(matter_id)
+        if m_st and m_st.state not in ("unavailable", "unknown"):
+            online.add("matter")
+
+    is_matter_only_cfg = configured == {"matter"}
+    is_matter_only_online = ("matter" in online) and not bool(online - {"matter"})
+    non_matter_online = bool(online - {"matter"})
+
+    return {
+        "configured": sorted(configured),
+        "online": sorted(online),
+        "is_matter_only_configured": is_matter_only_cfg,
+        "is_matter_only_online": is_matter_only_online,
+        "non_matter_available": non_matter_online,
+        "supports_full_miraie": bool(configured - {"matter"}),
+        "supports_cloud_energy": "cloud" in configured,
+        "supports_wifi_diag": bool(configured & {"cloud", "local_udp"}),
+    }
 
 
 def is_udp_supported_firmware(version_str: str | None) -> bool:
@@ -549,21 +641,22 @@ def build_device_info(device: Any) -> Any:
         if len(dev_id) == 12 and all(c in "0123456789ABCDEF" for c in dev_id):
             mac = dev_id
 
-    info = DeviceInfo(
+    connections_set = None
+    if mac:
+        clean_mac = str(mac).strip().replace(":", "").replace("-", "").upper()
+        if len(clean_mac) == 12:
+            try:
+                connections_set = {(CONNECTION_NETWORK_MAC, format_mac(clean_mac))}
+            except Exception:
+                pass
+    return DeviceInfo(
         identifiers={(DOMAIN, device.id)},
         name=device.friendly_name,
         manufacturer=brand,
         model=model,
         sw_version=sw_ver,
+        **({"connections": connections_set} if connections_set else {}),
     )
-    if mac:
-        clean_mac = str(mac).strip().replace(":", "").replace("-", "").upper()
-        if len(clean_mac) == 12:
-            try:
-                info["connections"] = {(CONNECTION_NETWORK_MAC, format_mac(clean_mac))}
-            except Exception:
-                pass
-    return info
 
 
 

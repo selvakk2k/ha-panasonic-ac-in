@@ -135,50 +135,67 @@ class MirAIeClimate(ClimateEntity):
             if "has_heat_mode" in caps:
                 has_heat = bool(caps["has_heat_mode"])
 
-        self._attr_hvac_modes = [
-            HVACMode.AUTO,
-            HVACMode.COOL,
-        ]
-        if has_heat:
-            self._attr_hvac_modes.append(HVACMode.HEAT)
-        self._attr_hvac_modes += [
-            HVACMode.OFF,
-            HVACMode.DRY,
-            HVACMode.FAN_ONLY,
-        ]
+        t_caps = coordinator.get_transport_caps() if coordinator and hasattr(coordinator, "get_transport_caps") else {}
+        is_matter_only = isinstance(t_caps, dict) and t_caps.get("is_matter_only_configured") is True
 
-        self._base_preset_modes = [
-            PRESET_NONE,
-            PRESET_ECO,
-            PRESET_BOOST,
-        ] + converti_presets
-
-        self._attr_fan_mode = "auto"
-        self._attr_fan_modes = [
-            FAN_AUTO,
-            FAN_LOW,
-            FAN_MEDIUM,
-            FAN_HIGH,
-            "quiet",
-        ]
-        self._attr_swing_modes = list(SWING_V_LIST)
-
-        features = (
-            ClimateEntityFeature.TARGET_TEMPERATURE
-            | ClimateEntityFeature.FAN_MODE
-            | ClimateEntityFeature.PRESET_MODE
-            | ClimateEntityFeature.SWING_MODE
-            | ClimateEntityFeature.TURN_OFF
-            | ClimateEntityFeature.TURN_ON
-        )
-
-        if has_h_vane:
-            self._attr_swing_horizontal_modes = list(SWING_H_LIST)
-            features |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
-        else:
+        if is_matter_only:
+            self._attr_hvac_modes = [HVACMode.OFF, HVACMode.COOL]
+            self._base_preset_modes = [PRESET_NONE]
+            self._attr_fan_mode = "auto"
+            self._attr_fan_modes = [FAN_AUTO, FAN_LOW, FAN_MEDIUM, FAN_HIGH, "quiet"]
+            self._attr_swing_modes = []
             self._attr_swing_horizontal_modes = []
+            self._attr_supported_features = (
+                ClimateEntityFeature.TARGET_TEMPERATURE
+                | ClimateEntityFeature.FAN_MODE
+                | ClimateEntityFeature.TURN_OFF
+                | ClimateEntityFeature.TURN_ON
+            )
+        else:
+            self._attr_hvac_modes = [
+                HVACMode.AUTO,
+                HVACMode.COOL,
+            ]
+            if has_heat:
+                self._attr_hvac_modes.append(HVACMode.HEAT)
+            self._attr_hvac_modes += [
+                HVACMode.OFF,
+                HVACMode.DRY,
+                HVACMode.FAN_ONLY,
+            ]
 
-        self._attr_supported_features = features
+            self._base_preset_modes = [
+                PRESET_NONE,
+                PRESET_ECO,
+                PRESET_BOOST,
+            ] + converti_presets
+
+            self._attr_fan_mode = "auto"
+            self._attr_fan_modes = [
+                FAN_AUTO,
+                FAN_LOW,
+                FAN_MEDIUM,
+                FAN_HIGH,
+                "quiet",
+            ]
+            self._attr_swing_modes = list(SWING_V_LIST)
+
+            features = (
+                ClimateEntityFeature.TARGET_TEMPERATURE
+                | ClimateEntityFeature.FAN_MODE
+                | ClimateEntityFeature.PRESET_MODE
+                | ClimateEntityFeature.SWING_MODE
+                | ClimateEntityFeature.TURN_OFF
+                | ClimateEntityFeature.TURN_ON
+            )
+
+            if has_h_vane:
+                self._attr_swing_horizontal_modes = list(SWING_H_LIST)
+                features |= ClimateEntityFeature.SWING_HORIZONTAL_MODE
+            else:
+                self._attr_swing_horizontal_modes = []
+
+            self._attr_supported_features = features
         self._attr_max_temp = 30.0
         self._attr_min_temp = 16.0
         self._attr_target_temperature_step = getattr(device, "target_temperature_step", 1.0)
@@ -318,6 +335,22 @@ class MirAIeClimate(ClimateEntity):
                 origin=origin,
             )
 
+        async def _try_matter() -> bool:
+            if not coord or not getattr(coord, "matter_entity_id", None):
+                return False
+            # Delegate non-Matter modes/features to secondary transport
+            if mode is not None and str(mode).lower() not in ("off", "cool"):
+                return False
+            if any(v is not None for v in (v_vane, h_vane, eco, nanoe, preset)):
+                return False
+            pwr = ("off" if mode == "off" else "on") if mode is not None else None
+            return await coord.async_dispatch_matter_command(
+                power=pwr,
+                hvac_mode=mode,
+                temperature=temp,
+                fan_mode=fan,
+            )
+
         async def _try_cloud() -> bool:
             if not cloud_coro or is_cloud_offline:
                 return False
@@ -348,6 +381,9 @@ class MirAIeClimate(ClimateEntity):
                         return
                 elif backend == "ir":
                     if await _try_ir(origin_name):
+                        return
+                elif backend == "matter":
+                    if await _try_matter():
                         return
                 elif backend == "cloud":
                     cloud_coro_awaited = True
@@ -427,6 +463,12 @@ class MirAIeClimate(ClimateEntity):
             attrs["has_udp"] = bool(getattr(coord, "has_udp", False))
             attrs["cloud_mqtt_connected"] = bool(getattr(coord, "cloud_mqtt_connected", False))
             attrs["ir_blaster_available"] = bool(getattr(coord, "ir_blaster_available", False))
+            attrs["matter_connected"] = bool(getattr(coord, "is_matter_available", False))
+            if hasattr(coord, "get_transport_caps"):
+                t_caps = coord.get_transport_caps()
+                attrs["active_transports"] = t_caps.get("online", [])
+                attrs["matter_only"] = bool(t_caps.get("is_matter_only_configured", False))
+                attrs["non_matter_available"] = bool(t_caps.get("non_matter_available", True))
         else:
             entry = getattr(self, "entry", None)
             if entry:
@@ -635,7 +677,10 @@ class MirAIeClimate(ClimateEntity):
         coord = getattr(self, "coordinator", None)
         if coord:
             primary = getattr(coord, "primary_backend", "cloud")
-            origin_label = "Local UDP" if primary == "local_udp" else ("IR" if primary == "ir" else "Cloud")
+            origin_label = (
+                "Local UDP" if primary == "local_udp"
+                else ("Matter" if primary == "matter" else ("IR" if primary == "ir" else "Cloud"))
+            )
             coord.async_optimistic_update(
                 target_temp=target_temp,
                 eco=False if is_eco_active else None,

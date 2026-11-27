@@ -4,6 +4,7 @@
   <img src="custom_components/miraie_in/brand/logo.png" alt="Panasonic AC India Logo" width="380">
 </p>
 
+<!-- ha-marketplace:exclude-start -->
 <p align="center">
   <a href="https://www.home-assistant.io/integrations/marketplace/"><img src="https://img.shields.io/badge/Marketplace-Custom-41BDF5.svg?style=flat-square" alt="Marketplace Custom"></a>
   <a href="https://github.com/selvakk2k/ha-panasonic-ac-in/releases/latest"><img src="https://img.shields.io/github/v/release/selvakk2k/ha-panasonic-ac-in?label=Stable&style=flat-square" alt="Stable"></a>
@@ -11,6 +12,7 @@
   <a href="https://github.com/selvakk2k"><img src="https://img.shields.io/badge/AI%20Assisted-Antigravity%20%7C%20Claude%20%7C%20CodeRabbit-blueviolet?style=flat-square" alt="AI-Assisted"></a>
   <a href="https://aiattribution.github.io/interpret-attribution"><img src="https://img.shields.io/badge/AI%20Attribution-AIA%20PAI%20Nc%20Hin-orange?style=flat-square" alt="AI Attribution"></a>
 </p>
+<!-- ha-marketplace:exclude-end -->
 
 A comprehensive Home Assistant custom integration for Panasonic Air Conditioners operating on the Indian-market MirAIe IoT platform. Features a multi-transport architecture combining real-time Cloud MQTT, zero-latency Local UDP, and offline Local IR blaster failover, long-term historical energy statistics import, and convertible capacity limits.
 
@@ -19,6 +21,10 @@ A comprehensive Home Assistant custom integration for Panasonic Air Conditioners
 
 > [!TIP]
 > A companion Lovelace dashboard card is available: **[panasonic-ac-card-in](https://github.com/selvakk2k/panasonic-ac-card-in)** (Panasonic AC India Card).
+
+> [!IMPORTANT]
+> ### Using the 3.0 Beta?
+> This `README.md` covers the current `2.1` stable release. If you are testing **3.0 Beta**, see **[README-3.0.md](docs/README-3.0.md)** and **[What's New in 3.0](docs/v3.0-whats-new.md)**.
 
 > [!NOTE]
 > ### Upgrading to 2.1
@@ -110,6 +116,7 @@ The integration supports a decoupled, multi-transport architecture allowing you 
 
 ---
 
+<!-- ha-marketplace:exclude-start -->
 ## Installation
 
 * **Prerequisites**: Home Assistant **2024.1.0** or newer.
@@ -133,6 +140,7 @@ The integration supports a decoupled, multi-transport architecture allowing you 
 3. Restart Home Assistant.
 
 ---
+<!-- ha-marketplace:exclude-end -->
 
 ## Configuration & Per-Device Options
 
@@ -202,6 +210,7 @@ For testing dashboard cards (such as `panasonic-ac-card-in`) or Lovelace automat
 
 ---
 
+<!-- ha-marketplace:exclude-start -->
 ## My Integrations & Lovelace Cards
 
 | Integration / Card | Category | Description | Status |
@@ -218,6 +227,7 @@ For testing dashboard cards (such as `panasonic-ac-card-in`) or Lovelace automat
 | [Tinxy Local Python](https://github.com/selvakk2k/ha-tinxylocal) | Integration | Pure-Python local control for Tinxy smart switches and modules | `Stable` |
 
 ---
+<!-- ha-marketplace:exclude-end -->
 
 ## Credits & License
 
@@ -230,6 +240,7 @@ For testing dashboard cards (such as `panasonic-ac-card-in`) or Lovelace automat
 * **Lead Architecture & Hardware Validation**: [@selvakk2k](https://github.com/selvakk2k) — physical hardware captures and domain requirements.
 * **Historical Energy Backfill**: Contributed by [@shashi278](https://github.com/shashi278).
 * **Code Implementation & Engineering**: **Antigravity** (Google DeepMind) — Hybrid transport failover, firmware 3.02+ parsing, long-term statistics reconciliation, and automated test suites.
+* **Automated Code Review & Auditing**: **CodeRabbit** ([@coderabbitai](https://github.com/coderabbitai)) — automated pull request and pre-commit code reviews, edge case detection, and security verification.
 * **Pre-Release Code Review & Auditing**: **Claude** (Anthropic) — independent architectural review, edge-case analysis, and verification of upstream compatibility.
 
 Licensed under the **Apache-2.0 License**. See the [LICENSE](LICENSE) file for details.

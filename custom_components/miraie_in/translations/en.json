@@ -3,18 +3,78 @@
     "step": {
       "user": {
         "title": "Select Setup Mode",
-        "description": "Choose how you want to configure your Panasonic AC units.",
+        "description": "Choose how you want to connect to your Panasonic AC units.",
         "menu_options": {
-          "hybrid": "Hybrid (Local UDP + Cloud / IR Failover)",
-          "ir_device": "Local IR Blaster (Standalone / Non-Wi-Fi)",
-          "local_udp": "Local UDP Only (Offline LAN)",
-          "cloud": "Cloud Only (MirAIe Cloud MQTT)"
+          "cloud": "Online Only",
+          "local_only": "Local Only",
+          "hybrid_menu": "Hybrid"
         },
         "menu_option_descriptions": {
-          "hybrid": "Combine fast local UDP with MirAIe Cloud MQTT and IR blaster failover.",
-          "ir_device": "Configure a standalone AC unit using an IR blaster without a cloud account.",
-          "local_udp": "Direct local LAN control over your home Wi-Fi with zero continuous cloud connection.",
-          "cloud": "Pure MirAIe Cloud MQTT control without local UDP LAN access."
+          "cloud": "Control your AC via Cloud MQTT without Local UDP, IR Blaster, or Matter.",
+          "local_only": "Run completely offline using Local UDP, an IR Blaster, or a Matter AC entity.",
+          "hybrid_menu": "Combine online and local connection methods with automatic failover between them."
+        }
+      },
+      "local_only": {
+        "title": "Local Only Setup",
+        "description": "Choose your local connection method:",
+        "menu_options": {
+          "local_udp": "Local UDP",
+          "ir_device": "IR Blaster",
+          "matter": "Matter"
+        },
+        "menu_option_descriptions": {
+          "local_udp": "Direct Local UDP control over your Wi-Fi network (Cloud-Assisted Key Discovery or Manual Entry).",
+          "ir_device": "Standalone IR Blaster control for non-Wi-Fi or IR-only units.",
+          "matter": "Wrap an existing Home Assistant Matter AC device into a unified climate entity."
+        }
+      },
+      "hybrid_menu": {
+        "title": "Hybrid Setup",
+        "description": "Choose whether to include MirAIe Cloud MQTT or run purely locally:",
+        "menu_options": {
+          "hybrid": "Cloud Hybrid",
+          "hybrid_local_menu": "Local Hybrid"
+        },
+        "menu_option_descriptions": {
+          "hybrid": "Available connection methods: Cloud MQTT, Local UDP, IR Blaster, and Matter (in any Primary/Secondary order).",
+          "hybrid_local_menu": "Available connection methods: Local UDP, IR Blaster, and Matter (zero continuous cloud connection)."
+        }
+      },
+      "hybrid_local_menu": {
+        "title": "Local Hybrid Setup",
+        "description": "Choose how you want to configure Local UDP (if used) and your local failover connection methods:",
+        "menu_options": {
+          "hybrid_local_auto": "Cloud-Assisted UDP Discovery",
+          "hybrid_offline": "Manual Entry"
+        },
+        "menu_option_descriptions": {
+          "hybrid_local_auto": "Log in once to fetch Local UDP keys automatically, then run offline with IR/Matter failover.",
+          "hybrid_offline": "Manually enter Local UDP IP/keys, IR Blaster, and/or Matter entity."
+        }
+      },
+      "matter": {
+        "title": "Matter AC Setup",
+        "description": "Select your Home Assistant Matter climate entity. Sibling Power switch, Fan, and Outdoor Temperature entities are merged automatically.",
+        "data": {
+          "matter_entity_id": "Matter Climate Entity",
+          "name": "AC Unit Name (Optional)",
+          "room_temp_sensor": "Room Temperature Sensor (Optional)"
+        }
+      },
+      "hybrid_offline": {
+        "title": "Offline Hybrid Setup",
+        "description": "Combine Local UDP, Matter, and/or IR Blaster connection methods with no cloud account required.",
+        "data": {
+          "name": "AC Unit Name",
+          "primary_backend": "Primary Connection Method",
+          "secondary_backend": "Secondary Backup Connection Method",
+          "matter_entity_id": "Matter Climate Entity (Optional)",
+          "blaster_entity_id": "IR Transmitter Entity (Optional)",
+          "device_ip": "AC IP Address (Optional)",
+          "udp_control_key": "UDP Control Key (Optional)",
+          "udp_control_iv": "UDP Control IV (Optional)",
+          "room_temp_sensor": "Room Temperature Sensor (Optional)"
         }
       },
       "local_udp": {
@@ -112,10 +172,10 @@
       },
       "hybrid_devices": {
         "title": "Configure Hybrid: {device_name}",
-        "description": "Configure transport failover and hardware peripherals for this unit:\n\n{model_display}",
+        "description": "Configure connection failover and hardware peripherals for this unit:\n\n{model_display}",
         "data": {
-          "primary_backend": "Primary Control Transport",
-          "secondary_backend": "Secondary Fallback Transport",
+          "primary_backend": "Primary Connection Method",
+          "secondary_backend": "Secondary Backup Connection Method",
           "hybrid_submode": "Failover Mode",
           "device_ip": "AC IP Address",
           "device_mac": "Device MAC Address (Wi-Fi MAC)",
@@ -128,6 +188,8 @@
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
           "availability_topic": "MQTT Availability Topic (Optional)",
           "availability_entity_id": "Availability / Status Entity (Optional)",
+          "matter_entity_id": "Matter Climate Entity (Optional)",
+          "enable_deep_diagnostics": "Enable Deep Diagnostics Sensors",
           "ir_format": "IR Protocol / Format",
           "install_date": "Energy History Start Date"
         },
@@ -138,9 +200,9 @@
           "udp_control_key": "Secret 32-byte AES encryption key used for local UDP communication. You can copy this key for manual offline UDP setup or CLI tools.",
           "udp_control_iv": "Secret 16-byte AES initialization vector used for local UDP communication. You can copy this IV for manual offline UDP setup or CLI tools.",
           "install_date": "Date the AC was physically installed or when energy tracking began (MirAIe maintains approximately 8 months of historical telemetry).",
-          "primary_backend": "Main transport used to dispatch commands. Local UDP provides instantaneous offline response.",
-          "secondary_backend": "Fallback transport automatically used if the primary transport is unreachable.",
-          "hybrid_submode": "Select Automatic Failover to switch transports dynamically on outages, or Manual Control.",
+          "primary_backend": "Main connection method used to dispatch commands. Local UDP provides instantaneous offline response.",
+          "secondary_backend": "Backup connection method automatically used if the primary connection is unreachable.",
+          "hybrid_submode": "Select Automatic Failover to switch connection methods dynamically on outages, or Manual Control.",
           "blaster_entity_id": "Optional IR blaster entity used to transmit commands locally.",
           "receiver_entity_id": "Optional entity used to listen for physical remote button presses.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
@@ -234,7 +296,7 @@
       "invalid_mac": "Invalid MAC address.",
       "no_devices_selected": "Please select at least one device to enroll.",
       "incompatible_device_selected": "One or more selected devices cannot be enrolled via Local UDP only mode (incompatible firmware or missing UDP credentials). Please uncheck them or configure using any of the other 3 modes (Cloud, Hybrid, or IR).",
-      "ip_required_for_udp": "Local IP address is required when Local UDP transport is selected."
+      "ip_required_for_udp": "Local IP address is required when Local UDP connection method is selected."
     },
     "abort": {
       "already_configured": "This device is already configured",
@@ -249,10 +311,10 @@
     "step": {
       "device_settings": {
         "title": "Settings for {device_name}",
-        "description": "Configure control transports, failover, and hardware peripherals for this unit:\n\n{model_code}",
+        "description": "Configure connection methods, failover, and hardware peripherals for this unit:\n\n{model_code}",
         "data": {
-          "primary_backend": "Primary Control Transport",
-          "secondary_backend": "Secondary Fallback Transport",
+          "primary_backend": "Primary Connection Method",
+          "secondary_backend": "Secondary Backup Connection Method",
           "hybrid_submode": "Failover Mode",
           "device_ip": "AC IP Address",
           "device_mac": "Device MAC Address (Wi-Fi MAC)",
@@ -265,6 +327,8 @@
           "room_temp_sensor": "Room Temperature Sensor (Optional)",
           "availability_topic": "MQTT Availability Topic (Optional)",
           "availability_entity_id": "Availability / Status Entity (Optional)",
+          "matter_entity_id": "Matter Climate Entity (Optional)",
+          "enable_deep_diagnostics": "Enable Deep Diagnostics Sensors",
           "ir_format": "IR Protocol / Format",
           "install_date": "Energy History Start Date"
         },
@@ -275,9 +339,9 @@
           "udp_control_key": "Secret 32-byte AES encryption key used for local UDP communication. You can copy this key for manual offline UDP setup or CLI tools.",
           "udp_control_iv": "Secret 16-byte AES initialization vector used for local UDP communication. You can copy this IV for manual offline UDP setup or CLI tools.",
           "install_date": "Date the AC was physically installed or when energy tracking began (MirAIe maintains approximately 8 months of historical telemetry).",
-          "primary_backend": "Main transport used to dispatch commands (e.g. Local UDP for fast offline control or Cloud MQTT).",
-          "secondary_backend": "Fallback transport automatically invoked if the primary transport is unreachable.",
-          "hybrid_submode": "Choose Automatic Failover to switch transports dynamically on outages, or Manual Control.",
+          "primary_backend": "Main connection method used to dispatch commands (e.g. Local UDP for fast offline control or Cloud MQTT).",
+          "secondary_backend": "Backup connection method automatically invoked if the primary connection is unreachable.",
+          "hybrid_submode": "Choose Automatic Failover to switch connection methods dynamically on outages, or Manual Control.",
           "blaster_entity_id": "Entity used to transmit infrared commands to the AC unit.",
           "receiver_entity_id": "Optional entity used to listen for physical remote control button presses to synchronize state.",
           "room_temp_sensor": "Optional external temperature sensor entity to report current room temperature for this AC.",
@@ -290,7 +354,7 @@
     },
     "error": {
       "invalid_install_date": "Date cannot be in the future or more than 8 months back (MirAIe keeps ~8 months)",
-      "blaster_required_for_ir": "An IR Transmitter entity must be selected when Infrared is chosen as a transport.",
+      "blaster_required_for_ir": "An IR Transmitter entity must be selected when IR Blaster is chosen as a connection method.",
       "missing_tasmota_endpoint": "Please provide either an MQTT command topic or a remote entity.",
       "both_endpoints_provided": "Please configure either a remote entity or an MQTT topic, not both.",
       "invalid_mqtt_topic": "Invalid MQTT command topic. Topic must contain '/' and cannot contain '+' or '#' wildcards.",
@@ -346,7 +410,7 @@
         "name": "Hybrid Automatic Control"
       },
       "active_backend": {
-        "name": "Primary Transport Backend"
+        "name": "Primary Connection Method"
       }
     },
     "button": {
@@ -410,6 +474,30 @@
       },
       "error_code": {
         "name": "Diagnostic Error Code"
+      },
+      "estimated_power": {
+        "name": "Estimated Power"
+      },
+      "estimated_energy": {
+        "name": "Estimated Energy"
+      },
+      "compressor_frequency": {
+        "name": "Compressor Frequency"
+      },
+      "evaporator_coil_temp": {
+        "name": "Evaporator Coil Temperature"
+      },
+      "outdoor_condenser_temp": {
+        "name": "Outdoor Condenser Temperature"
+      },
+      "fan_stage": {
+        "name": "Indoor Fan Stage"
+      },
+      "voltage": {
+        "name": "AC Voltage"
+      },
+      "current": {
+        "name": "AC Current"
       }
     },
     "select": {
